@@ -1,0 +1,25 @@
+{
+  "brand": {
+    "name": "Debiyan"
+  },
+  "branding": {
+    "primaryColor": "#0F766E",
+    "backgroundColor": "#F0FDFA",
+    "icon": "./assets/images/icon.png",
+    "splashImage": "./assets/images/splash-icon.png"
+  },
+  "app": {
+    "name": "DeyPocket",
+    "key": "deypocket",
+    "slug": "deypocket",
+    "scheme": "deypocket",
+    "androidPackage": "app.debiyan.deypocket",
+    "iosBundleIdentifier": "app.debiyan.deypocket",
+    "databaseName": "deypocket.db"
+  },
+  "release": {
+    "owner": "",
+    "repository": "deypocket",
+    "apkPrefix": "deypocket"
+  }
+}

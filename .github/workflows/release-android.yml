@@ -1,0 +1,254 @@
+
+name: Debiyan Android Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and Publish APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate project configuration
+        id: project
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const project = JSON.parse(
+            fs.readFileSync('project.config.json', 'utf8')
+          );
+
+          const appJson = JSON.parse(
+            fs.readFileSync('app.json', 'utf8')
+          );
+
+          const { app, release } = project;
+          const version = appJson.expo.version;
+
+          if (!/^\d+\.\d+\.\d+$/.test(version)) {
+            throw new Error('Invalid app version.');
+          }
+
+          if (!/^[a-z][a-z0-9_]*$/.test(app.key)) {
+            throw new Error('Invalid application key.');
+          }
+
+          const expectedPackage = `app.debiyan.${app.key}`;
+
+          if (app.androidPackage !== expectedPackage) {
+            throw new Error(
+              `Android package must be ${expectedPackage}`
+            );
+          }
+
+          if (!/^[a-z0-9][a-z0-9_-]*$/.test(release.apkPrefix)) {
+            throw new Error('Invalid APK prefix.');
+          }
+
+          const expectedRepo =
+            `${release.owner}/${release.repository}`;
+
+          if (
+            process.env.GITHUB_REPOSITORY.toLowerCase() !==
+            expectedRepo.toLowerCase()
+          ) {
+            throw new Error(
+              'GitHub repository does not match project configuration.'
+            );
+          }
+
+          if (
+            process.env.GITHUB_REF_NAME !==
+            process.env.DEFAULT_BRANCH
+          ) {
+            throw new Error(
+              'Release must run from the default branch.'
+            );
+          }
+
+          if (!appJson.expo.extra?.eas?.projectId) {
+            throw new Error(
+              'EAS Project ID is missing. Run eas init first.'
+            );
+          }
+
+          const output = [
+            `version=${version}`,
+            `prefix=${release.apkPrefix}`,
+            `app_name=${app.name.replace(/[\r\n]/g, ' ')}`,
+          ].join('\n');
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            output + '\n'
+          );
+
+          console.log(
+            `Validated ${app.name} v${version}`
+          );
+          NODE
+
+      - name: Validate DeyKit Project
+        run: npm run validate:release
+
+      - name: Check existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.project.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "Release v$VERSION already exists."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin \
+            "refs/tags/v$VERSION" > /dev/null 2>&1; then
+            echo "Git tag v$VERSION already exists."
+            exit 1
+          fi
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v9
+        with:
+          eas-version: latest
+          packager: npm
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build signed Android APK
+        run: |
+          eas build \
+            --platform android \
+            --profile preview \
+            --non-interactive \
+            --wait \
+            --json > eas-build.json
+
+      - name: Download APK from EAS
+        env:
+          VERSION: ${{ steps.project.outputs.version }}
+          APK_PREFIX: ${{ steps.project.outputs.prefix }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { Readable } = require('node:stream');
+          const { pipeline } = require('node:stream/promises');
+
+          async function main() {
+            const result = JSON.parse(
+              fs.readFileSync('eas-build.json', 'utf8')
+            );
+
+            const build = Array.isArray(result)
+              ? result[0]
+              : result;
+
+            if (
+              String(build?.status).toUpperCase() !== 'FINISHED'
+            ) {
+              throw new Error('EAS Build did not finish.');
+            }
+
+            const url =
+              build.artifacts?.buildUrl ??
+              build.artifacts?.applicationArchiveUrl;
+
+            if (!url || !url.startsWith('https://')) {
+              throw new Error('EAS APK URL not found.');
+            }
+
+            const response = await fetch(url);
+
+            if (!response.ok || !response.body) {
+              throw new Error(
+                `APK download failed: HTTP ${response.status}`
+              );
+            }
+
+            fs.mkdirSync('dist', { recursive: true });
+
+            const filename =
+              `dist/${process.env.APK_PREFIX}` +
+              `-v${process.env.VERSION}.apk`;
+
+            await pipeline(
+              Readable.fromWeb(response.body),
+              fs.createWriteStream(filename)
+            );
+
+            const stats = fs.statSync(filename);
+
+            if (stats.size < 100000) {
+              throw new Error('Downloaded APK is too small.');
+            }
+
+            const fd = fs.openSync(filename, 'r');
+            const header = Buffer.alloc(2);
+
+            try {
+              fs.readSync(fd, header, 0, 2, 0);
+            } finally {
+              fs.closeSync(fd);
+            }
+
+            if (
+              header[0] !== 0x50 ||
+              header[1] !== 0x4b
+            ) {
+              throw new Error(
+                'Downloaded file is not a ZIP/APK archive.'
+              );
+            }
+
+            console.log(
+              `APK ready: ${filename}`
+            );
+          }
+
+          main().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.project.outputs.version }}
+          APK_PREFIX: ${{ steps.project.outputs.prefix }}
+          APP_NAME: ${{ steps.project.outputs.app_name }}
+        run: |
+          gh release create "v$VERSION" \
+            "dist/$APK_PREFIX-v$VERSION.apk" \
+            --title "$APP_NAME v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --generate-notes
+
+      - name: Completed
+        env:
+          VERSION: ${{ steps.project.outputs.version }}
+        run: |
+          echo "Release v$VERSION published successfully."
