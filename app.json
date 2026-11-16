@@ -48,6 +48,20 @@
         "asyncRoutes": {
           "web": true
         }
+      },
+      "project": {
+        "brandName": "Debiyan",
+        "appName": "DeyPocket",
+        "appKey": "deypocket",
+        "databaseName": "deypocket.db",
+        "primaryColor": "#0F766E",
+        "backgroundColor": "#F0FDFA",
+        "apkPrefix": "deypocket",
+        "releaseOwner": "robbirodhiyan",
+        "releaseRepository": "deypocket"
+      },
+      "eas": {
+        "projectId": "03d8e7e0-ddf5-4cc9-9534-6f60c9fe608b"
       }
     }
   }
