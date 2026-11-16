@@ -41,3 +41,6 @@ example
 # generated native folders
 /ios
 /android
+
+# Sprint 6.1 local installer backups
+*.before-sprint6_1.bak

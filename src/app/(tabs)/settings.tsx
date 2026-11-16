@@ -1,5 +1,5 @@
 
-import { router } from 'expo-router';
+import { router, type Href } from 'expo-router';
 import { ScrollView, View } from 'react-native';
 
 import {
@@ -182,6 +182,18 @@ export default function SettingsScreen() {
                 color={theme.colors.primary}
               />
             )}
+          />
+
+          <Divider />
+
+          <List.Item
+            title="Pembaruan Aplikasi"
+            description="Cek update fitur OTA dan APK terbaru"
+            left={(props) => (
+              <List.Icon {...props} icon="update" color={theme.colors.primary} />
+            )}
+            right={(props) => <List.Icon {...props} icon="chevron-right" />}
+            onPress={() => router.push('/updates' as Href)}
           />
         </Card.Content>
       </Card>
