@@ -5,39 +5,35 @@ import {
   Image,
   StatusBar,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
 
-// The existing 9:16 splash file. Keep this path static so Metro bundles it.
+// Desain portrait asli (9:16). Metro perlu path require yang statis.
 const SPLASH_ART = require('../../assets/images/splash-icon.png');
 
 const BACKGROUND_COLOR = '#F0FDFA';
 const FADE_DURATION_MS = 250;
 
-interface FullscreenStartupSplashProps {
+type Props = {
   children: ReactNode;
-  /** True once the app's required startup initialization is complete. */
+  /** Set true setelah inisialisasi penting (mis. SQLite) selesai. */
   ready?: boolean;
-  /** Short minimum display to prevent an imperceptible flash on fast devices. */
+  /** Lama minimum CUSTOM splash terlihat setelah native splash ditutup. */
   minVisibleMs?: number;
-}
+};
 
 /**
- * Fullscreen 9:16 React Native startup cover.
- *
- * Native Android splash screen cannot display an arbitrary portrait poster.
- * Keep a small square logo in the native splash, then present this cover
- * as soon as React Native can render an image.
- *
- * Place this outside your SQLiteProvider / navigation tree in the root layout.
- * The children are mounted beneath the cover, so they initialize normally.
+ * Native splash -> gambar portrait -> halaman utama.
+ * Letakkan di luar SQLiteProvider pada root layout.
  */
 export default function FullscreenStartupSplash({
   children,
   ready = true,
   minVisibleMs = 850,
-}: FullscreenStartupSplashProps) {
+}: Props) {
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
   const [contentLaidOut, setContentLaidOut] = useState(false);
   const [nativeHidden, setNativeHidden] = useState(false);
   const [minimumElapsed, setMinimumElapsed] = useState(false);
@@ -45,38 +41,43 @@ export default function FullscreenStartupSplash({
 
   const fadeStarted = useRef(false);
   const opacity = useRef(new Animated.Value(1)).current;
+  const imageReady = imageLoaded || imageFailed;
 
+  // Waktu minimum dihitung sesudah native splash hilang, bukan sejak mount.
   useEffect(() => {
+    if (!nativeHidden) return;
+
     const timeout = setTimeout(
       () => setMinimumElapsed(true),
       Math.max(0, minVisibleMs),
     );
     return () => clearTimeout(timeout);
-  }, [minVisibleMs]);
+  }, [nativeHidden, minVisibleMs]);
 
-  // Do not dismiss the native splash until the portrait image is loaded.
+  // Jangan menutup native splash sampai gambar berhasil dimuat, atau
+  // fallback tersedia jika asset gagal dibaca.
   useEffect(() => {
-    if (!imageLoaded) return;
+    if (!imageReady) return;
 
-    let mounted = true;
+    let active = true;
     void SplashScreen.hideAsync()
       .catch((error: unknown) => {
-        console.warn('[Splash] Failed to dismiss native splash:', error);
+        console.warn('[Splash] Failed to hide native splash:', error);
       })
       .finally(() => {
-        if (mounted) setNativeHidden(true);
+        if (active) setNativeHidden(true);
       });
 
     return () => {
-      mounted = false;
+      active = false;
     };
-  }, [imageLoaded]);
+  }, [imageReady]);
 
-  // Fade only when the first screen is laid out AND initialization is ready.
+  // Tampilkan dashboard hanya setelah database siap dan waktu minimum lewat.
   useEffect(() => {
     if (
       !ready ||
-      !imageLoaded ||
+      !imageReady ||
       !contentLaidOut ||
       !nativeHidden ||
       !minimumElapsed ||
@@ -93,21 +94,11 @@ export default function FullscreenStartupSplash({
     }).start(({ finished }) => {
       if (finished) setCoverVisible(false);
     });
-  }, [
-    ready,
-    imageLoaded,
-    contentLaidOut,
-    nativeHidden,
-    minimumElapsed,
-    opacity,
-  ]);
+  }, [ready, imageReady, contentLaidOut, nativeHidden, minimumElapsed, opacity]);
 
   return (
     <View style={styles.root}>
-      <View
-        style={styles.content}
-        onLayout={() => setContentLaidOut(true)}
-      >
+      <View style={styles.content} onLayout={() => setContentLaidOut(true)}>
         {children}
       </View>
 
@@ -119,19 +110,27 @@ export default function FullscreenStartupSplash({
           importantForAccessibility="no-hide-descendants"
         >
           <StatusBar hidden />
-          <Image
-            source={SPLASH_ART}
-            resizeMode="cover"
-            style={styles.image}
-            fadeDuration={0}
-            onLoadEnd={() => setImageLoaded(true)}
-            onError={(event) => {
-              console.warn(
-                '[Splash] Failed to load portrait splash image:',
-                event.nativeEvent.error,
-              );
-            }}
-          />
+
+          {imageFailed ? (
+            <View style={styles.fallback}>
+              <Text style={styles.fallbackTitle}>DeyPocket</Text>
+            </View>
+          ) : (
+            <Image
+              source={SPLASH_ART}
+              resizeMode="cover"
+              style={styles.image}
+              fadeDuration={0}
+              onLoad={() => setImageLoaded(true)}
+              onError={(event) => {
+                console.warn(
+                  '[Splash] Failed to load portrait image:',
+                  event.nativeEvent.error,
+                );
+                setImageFailed(true);
+              }}
+            />
+          )}
         </Animated.View>
       )}
     </View>
@@ -156,5 +155,15 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: '100%',
+  },
+  fallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fallbackTitle: {
+    color: '#115E59',
+    fontSize: 28,
+    fontWeight: '800',
   },
 });
