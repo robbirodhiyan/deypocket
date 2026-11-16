@@ -62,9 +62,12 @@ jobs:
           npm run validate
           npm run validate:release --if-present
 
+      - name: Install EAS CLI
+        run: npm install --global eas-cli@latest
+
       - name: Build signed Android APK on EAS
         run: |
-          npx --yes eas-cli@latest build \
+          eas build \
             --platform android \
             --profile preview \
             --non-interactive \
