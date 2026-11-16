@@ -610,6 +610,16 @@ export default function HomeScreen() {
                   </Pressable>
                 ))}
               </View>
+
+              <Button
+                mode="contained-tonal"
+                icon="bullseye-arrow"
+                onPress={() => router.push('/goals')}
+                contentStyle={{ minHeight: 45 }}
+                style={{ borderRadius: 14 }}
+              >
+                Target Tabungan
+              </Button>
             </View>
 
             {/* ANGGARAN BULANAN */}
