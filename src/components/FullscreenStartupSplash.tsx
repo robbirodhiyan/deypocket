@@ -118,7 +118,7 @@ export default function FullscreenStartupSplash({
           ) : (
             <Image
               source={SPLASH_ART}
-              resizeMode="cover"
+              resizeMode="contain"
               style={styles.image}
               fadeDuration={0}
               onLoad={() => setImageLoaded(true)}
