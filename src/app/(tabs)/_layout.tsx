@@ -3,6 +3,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Tabs } from 'expo-router';
 import { Platform, StyleSheet } from 'react-native';
 import { useTheme } from 'react-native-paper';
+import SafeAdaptiveTabs from '../../components/SafeAdaptiveTabs';
 
 export default function DeyPocketTabLayout() {
   const theme = useTheme();
@@ -14,7 +15,7 @@ export default function DeyPocketTabLayout() {
   const inactiveColor = theme.colors.onSurfaceVariant;
 
   return (
-    <Tabs
+    <SafeAdaptiveTabs
       screenOptions={{
         // =================================================
         // GENERAL
@@ -158,6 +159,6 @@ export default function DeyPocketTabLayout() {
           ),
         }}
       />
-    </Tabs>
+    </SafeAdaptiveTabs>
   );
 }

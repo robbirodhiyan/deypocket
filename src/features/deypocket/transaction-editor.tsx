@@ -4,35 +4,35 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { ComponentProps } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
-    KeyboardAvoidingView,
-    TextInput as NativeTextInput,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    View,
+  KeyboardAvoidingView,
+  TextInput as NativeTextInput,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
 } from 'react-native';
 import {
-    ActivityIndicator,
-    Button,
-    Card,
-    Dialog,
-    Divider,
-    HelperText,
-    Portal,
-    Text,
-    TextInput,
-    useTheme,
+  ActivityIndicator,
+  Button,
+  Card,
+  Dialog,
+  Divider,
+  HelperText,
+  Portal,
+  Text,
+  TextInput,
+  useTheme,
 } from 'react-native-paper';
 
 import type { EditableEntry } from './finance-management';
 import {
-    getAccounts,
-    getCategories,
-    type ActivityKind,
-    type FinanceAccount,
-    type FinanceCategory,
-    type TransactionKind,
+  getAccounts,
+  getCategories,
+  type ActivityKind,
+  type FinanceAccount,
+  type FinanceCategory,
+  type TransactionKind,
 } from './finance-repository';
 import { formatRupiah, getLocalDate } from './format';
 
@@ -421,10 +421,11 @@ export default function TransactionEditor({
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: theme.colors.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'web' ? undefined : 'padding'}
     >
       <ScrollView
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.page}
       >
@@ -737,7 +738,7 @@ export default function TransactionEditor({
         >
           <Dialog.Title>{pickerTitle}</Dialog.Title>
           <Dialog.ScrollArea style={{ paddingHorizontal: 0 }}>
-            <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
+            <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
               {pickerOptions.length === 0 ? (
                 <Text style={{ padding: 18 }}>Belum ada pilihan tersedia.</Text>
               ) : (
