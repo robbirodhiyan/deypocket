@@ -1,0 +1,17 @@
+// Illustration only — DO NOT replace your src/app/_layout.tsx with this file.
+// Add these imports (avoid duplicates):
+import FullscreenStartupSplash from '../components/FullscreenStartupSplash';
+import * as SplashScreen from 'expo-splash-screen';
+
+// At module scope:
+void SplashScreen.preventAutoHideAsync();
+
+// Within the existing RootLayout() return, wrap the current JSX:
+return (
+  <FullscreenStartupSplash>
+    {/* Keep your existing SQLiteProvider, ThemeProvider, Stack, OTA etc. */}
+  </FullscreenStartupSplash>
+);
+
+// If your RootLayout already has an initialization completion flag:
+// <FullscreenStartupSplash ready={appReady}> ... </FullscreenStartupSplash>
