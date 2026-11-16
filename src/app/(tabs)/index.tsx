@@ -126,6 +126,9 @@ export default function HomeScreen() {
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
 
+  // Privasi: total saldo disembunyikan setiap kali dashboard dibuka.
+  const [balanceVisible, setBalanceVisible] = useState(false);
+
   // ===================================================
   // LOAD DATA
   // ===================================================
@@ -133,6 +136,7 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       let active = true;
+      setBalanceVisible(false);
 
       async function loadDashboard() {
         setLoading(true);
@@ -359,10 +363,21 @@ export default function HomeScreen() {
           <>
             {/* TOTAL SALDO */}
 
-            <View
-              style={[
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={
+                balanceVisible
+                  ? `Total saldo ${formatRupiah(summary.balance)}. Ketuk untuk sembunyikan.`
+                  : 'Total saldo tersembunyi. Ketuk untuk tampilkan.'
+              }
+              accessibilityHint="Menampilkan atau menyembunyikan total saldo seluruh dompet"
+              onPress={() => setBalanceVisible((current) => !current)}
+              style={({ pressed }) => [
                 styles.hero,
-                { backgroundColor: theme.colors.primary },
+                {
+                  backgroundColor: theme.colors.primary,
+                  opacity: pressed ? 0.94 : 1,
+                },
               ]}
             >
               <View
@@ -389,8 +404,8 @@ export default function HomeScreen() {
 
                   <View style={styles.heroIcon}>
                     <MaterialCommunityIcons
-                      name="wallet-outline"
-                      size={22}
+                      name={balanceVisible ? 'eye-outline' : 'eye-off-outline'}
+                      size={23}
                       color={theme.colors.onPrimary}
                     />
                   </View>
@@ -407,7 +422,9 @@ export default function HomeScreen() {
                       letterSpacing: -1,
                     }}
                   >
-                    {formatRupiah(summary.balance)}
+                    {balanceVisible
+                      ? formatRupiah(summary.balance)
+                      : 'Rp ••••••••'}
                   </Text>
 
                   <View
@@ -430,12 +447,14 @@ export default function HomeScreen() {
                         opacity: 0.82,
                       }}
                     >
-                      Saldo gabungan seluruh dompet aktif
+                      {balanceVisible
+                        ? 'Ketuk kartu untuk sembunyikan saldo'
+                        : 'Ketuk kartu untuk melihat total saldo'}
                     </Text>
                   </View>
                 </View>
               </View>
-            </View>
+            </Pressable>
 
             {/* PEMASUKAN & PENGELUARAN */}
 
