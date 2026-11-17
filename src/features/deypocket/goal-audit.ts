@@ -9,7 +9,8 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export type GoalAuditProblem = {
   code: 'negative_balance' | 'invalid_target' | 'orphan_entry' |
     'orphan_transfer' | 'wrong_kind' | 'different_amount' |
-    'different_date' | 'wrong_goal' | 'duplicate_reference';
+    'different_date' | 'wrong_goal' | 'duplicate_reference' |
+    'orphan_correction' | 'invalid_correction';
   goalId: number | null;
   goalName: string;
   description: string;
@@ -47,14 +48,16 @@ type RecordRow = {
 };
 
 type DatabaseTable = 'dp_savings_goals' | 'dp_goal_entries' |
-  'dp_goal_transfer_records' | 'dp_goal_withdrawal_records';
+  'dp_goal_transfer_records' | 'dp_goal_withdrawal_records' |
+  'dp_goal_entry_corrections';
 
 async function existingTables(db: SQLiteDatabase): Promise<Set<string>> {
   const rows = await db.getAllAsync<{ name: string }>(
     `SELECT name FROM sqlite_master
      WHERE type = 'table'
        AND name IN ('dp_savings_goals', 'dp_goal_entries',
-         'dp_goal_transfer_records', 'dp_goal_withdrawal_records')`
+         'dp_goal_transfer_records', 'dp_goal_withdrawal_records',
+         'dp_goal_entry_corrections')`
   );
   return new Set(rows.map((row) => row.name));
 }
@@ -134,6 +137,11 @@ export async function auditSavingsGoals(db: SQLiteDatabase): Promise<GoalAuditRe
   );
   const depositRecords = await recordsFrom(db, tables, 'dp_goal_transfer_records');
   const withdrawalRecords = await recordsFrom(db, tables, 'dp_goal_withdrawal_records');
+  const corrections = tables.has('dp_goal_entry_corrections')
+    ? await db.getAllAsync<{ id: number; original_entry_id: number; reversal_entry_id: number; goal_id: number }>(
+        'SELECT id, original_entry_id, reversal_entry_id, goal_id FROM dp_goal_entry_corrections'
+      )
+    : []; 
 
   const goalById = new Map(goals.map((goal) => [goal.id, goal]));
   const entryById = new Map(entries.map((entry) => [entry.id, entry]));
@@ -213,6 +221,35 @@ export async function auditSavingsGoals(db: SQLiteDatabase): Promise<GoalAuditRe
 
   for (const record of depositRecords) inspectRecord(record, 'deposit');
   for (const record of withdrawalRecords) inspectRecord(record, 'withdrawal');
+
+  // Sprint 11: validate append-only manual cancellation pairs, without edits.
+  const correctedIds = new Set<number>();
+  for (const correction of corrections) {
+    const original = entryById.get(correction.original_entry_id);
+    const reversal = entryById.get(correction.reversal_entry_id);
+    if (!original || !reversal) {
+      issue('orphan_correction', correction.goal_id,
+        `Koreksi #${correction.id} memiliki referensi jurnal yang hilang.`);
+      continue;
+    }
+    if (
+      original.goal_id !== correction.goal_id ||
+      reversal.goal_id !== correction.goal_id ||
+      original.amount_rupiah !== reversal.amount_rupiah ||
+      original.kind === reversal.kind ||
+      !(['deposit', 'withdrawal'].includes(original.kind)) ||
+      !(['deposit', 'withdrawal'].includes(reversal.kind)) ||
+      linkedEntries.has(original.id) ||
+      linkedEntries.has(reversal.id) ||
+      correctedIds.has(original.id) ||
+      correctedIds.has(reversal.id)
+    ) {
+      issue('invalid_correction', correction.goal_id,
+        `Jurnal pembatalan #${correction.id} tidak konsisten dengan catatan asli.`);
+    }
+    correctedIds.add(original.id);
+    correctedIds.add(reversal.id);
+  }
 
   for (const goal of goals) {
     const balance = balances.get(goal.id) ?? 0;

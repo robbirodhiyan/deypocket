@@ -18,6 +18,11 @@ import { formatRupiah } from '../../features/deypocket/format';
 import { getWallets, type WalletRecord } from '../../features/deypocket/finance-management';
 import { getGoalWalletLinks, setGoalWalletLink } from '../../features/deypocket/goal-wallet-repository';
 import { calculateGoalPlan } from '../../features/deypocket/goal-planner';
+import { buildGoalHistoryView, type GoalHistoryFilter } from '../../features/deypocket/goal-history';
+import { calculateGoalInsights, getGoalActivityMap, type GoalActivityMap } from '../../features/deypocket/goal-insights';
+import {
+  cancelManualGoalEntry, getGoalCorrectionMap, type GoalCorrectionMap,
+} from '../../features/deypocket/goal-corrections';
 import {
   auditSavingsGoals, getGoalEntrySourceMap,
   type GoalAuditReport, type GoalEntrySourceMap,
@@ -34,6 +39,7 @@ import {
 type Filter = 'active' | 'archived';
 type DialogAction = 'actions' | 'archive' | 'restore' | 'delete' | 'wallet';
 type DialogState = { goal: SavingsGoal; action: DialogAction };
+type CorrectionPrompt = { goal: SavingsGoal; entry: GoalEntry };
 type IconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 function progress(saved: number, target: number): number {
@@ -106,6 +112,7 @@ export default function GoalsScreen() {
 
   const [filter, setFilter] = useState<Filter>('active');
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
+  const [activity, setActivity] = useState<GoalActivityMap>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -113,8 +120,12 @@ export default function GoalsScreen() {
   const [busy, setBusy] = useState(false);
   const [historyId, setHistoryId] = useState<number | null>(null);
   const [history, setHistory] = useState<GoalEntry[]>([]);
+  const [historyFilter, setHistoryFilter] = useState<GoalHistoryFilter>('all');
+  const [historyVisibleLimit, setHistoryVisibleLimit] = useState(30);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [entrySources, setEntrySources] = useState<GoalEntrySourceMap>({});
+  const [correctionMap, setCorrectionMap] = useState<GoalCorrectionMap>({});
+  const [correctionPrompt, setCorrectionPrompt] = useState<CorrectionPrompt | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditReport, setAuditReport] = useState<GoalAuditReport | null>(null);
@@ -129,6 +140,11 @@ export default function GoalsScreen() {
 
   const reload = useCallback(async (nextFilter: Filter) => {
     setGoals(await getSavingsGoals(db, nextFilter === 'archived'));
+    if (nextFilter === 'active') {
+      try { setActivity(await getGoalActivityMap(db)); } catch { setActivity({}); }
+    } else {
+      setActivity({});
+    }
     // Membership is only metadata. Failure here must not block Goals.
     try {
       setWalletLinks(await getGoalWalletLinks(db));
@@ -176,8 +192,13 @@ export default function GoalsScreen() {
     setDialog(null);
     setHistoryId(null);
     setHistory([]);
+    setHistoryFilter('all');
+    setHistoryVisibleLimit(30);
     setEntrySources({});
+    setCorrectionMap({});
+    setCorrectionPrompt(null);
     setError('');
+    setActivity({});
     setLoading(true);
     // Wallet metadata is loaded independently, so target cards remain usable
     // if the optional wallet feature cannot be initialized.
@@ -191,6 +212,12 @@ export default function GoalsScreen() {
       .catch(err => {
         if (active) setWalletError(err instanceof Error ? err.message : 'Rekening terkait belum dapat dimuat.');
       });
+
+    if (filter === 'active') {
+      void getGoalActivityMap(db)
+        .then(rows => { if (active) setActivity(rows); })
+        .catch(() => { if (active) setActivity({}); });
+    }
 
     void getSavingsGoals(db, filter === 'archived')
       .then(rows => { if (active) setGoals(rows); })
@@ -215,23 +242,30 @@ export default function GoalsScreen() {
     if (lock.current) return;
     const request = ++historyRequest.current;
     if (historyId === id) {
+      setHistoryFilter('all');
+      setHistoryVisibleLimit(30);
       setHistoryId(null);
       setHistory([]);
       setEntrySources({});
+      setCorrectionMap({});
       setHistoryLoading(false);
       return;
     }
+    setHistoryFilter('all');
+    setHistoryVisibleLimit(30);
     setHistoryId(id);
     setHistory([]);
     setEntrySources({});
+    setCorrectionMap({});
     setHistoryLoading(true);
     try {
-      const [entries, sources] = await Promise.all([
-        getGoalEntries(db, id), getGoalEntrySourceMap(db, id),
+      const [entries, sources, corrections] = await Promise.all([
+        getGoalEntries(db, id), getGoalEntrySourceMap(db, id), getGoalCorrectionMap(db, id),
       ]);
       if (request === historyRequest.current) {
         setHistory(entries);
         setEntrySources(sources);
+        setCorrectionMap(corrections);
       }
     } catch (err) {
       if (request === historyRequest.current) {
@@ -240,6 +274,36 @@ export default function GoalsScreen() {
       }
     } finally {
       if (request === historyRequest.current) setHistoryLoading(false);
+    }
+  }
+
+  async function applyManualCorrection(goalId: number, entryId: number) {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    setCorrectionPrompt(null);
+    setNotice('');
+    try {
+      await cancelManualGoalEntry(db, goalId, entryId);
+      const request = ++historyRequest.current;
+      const [entries, sources, corrections] = await Promise.all([
+        getGoalEntries(db, goalId), getGoalEntrySourceMap(db, goalId),
+        getGoalCorrectionMap(db, goalId),
+      ]);
+      if (request === historyRequest.current) {
+        setHistoryId(goalId);
+        setHistory(entries);
+        setEntrySources(sources);
+        setCorrectionMap(corrections);
+        setHistoryLoading(false);
+      }
+      await reload(filter);
+      setNotice('Catatan manual dibatalkan. Koreksi tercatat di riwayat; saldo rekening tidak berubah.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Pembatalan catatan gagal.');
+    } finally {
+      lock.current = false;
+      setBusy(false);
     }
   }
 
@@ -389,6 +453,9 @@ export default function GoalsScreen() {
           const finished = goal.saved_rupiah >= goal.target_rupiah;
           const remaining = Math.max(0, goal.target_rupiah - goal.saved_rupiah);
           const historyOpen = historyId === goal.id;
+          const historyView = historyOpen && !historyLoading
+            ? buildGoalHistoryView(history, correctionMap, historyFilter, historyVisibleLimit)
+            : null;
           const barWidth = `${Math.round(progress(goal.saved_rupiah, goal.target_rupiah) * 100)}%` as `${number}%`;
           const relatedWallet = wallets.find(item => item.id === walletLinks[goal.id]);
           const monthlyPlan = calculateGoalPlan({
@@ -396,6 +463,14 @@ export default function GoalsScreen() {
             target: goal.target_rupiah,
             targetDate: goal.target_date,
           });
+          const insight = !archived && activity[goal.id]
+            ? calculateGoalInsights({
+                savedRupiah: goal.saved_rupiah,
+                targetRupiah: goal.target_rupiah,
+                targetDate: goal.target_date,
+                activity: activity[goal.id],
+              })
+            : null;
           return (
             <View key={goal.id} style={[styles.goalCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}>
               <View style={styles.cardHeader}>
@@ -471,6 +546,64 @@ export default function GoalsScreen() {
                 </View>
               )}
 
+              {!archived && insight && !finished && (
+                <View style={[styles.insightBox, {
+                  backgroundColor: theme.colors.surfaceVariant,
+                }]}>
+                  <View style={styles.insightHeader}>
+                    <View style={styles.insightTitleRow}>
+                      <MaterialCommunityIcons
+                        name={insight.status === 'declining' ? 'trending-down' : insight.status === 'growing' ? 'trending-up' : 'chart-timeline-variant'}
+                        size={19}
+                        color={insight.status === 'declining' ? theme.colors.error : theme.colors.primary}
+                      />
+                      <Text variant="labelLarge" style={{ fontWeight: '800', color: theme.colors.onSurface }}>
+                        Ritme tabungan
+                      </Text>
+                    </View>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                      90 hari terakhir
+                    </Text>
+                  </View>
+                  <View style={styles.insightStatRow}>
+                    <View style={styles.insightStat}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Bersih 90 hari</Text>
+                      <Text style={[styles.insightAmount, { color: insight.net90Days < 0 ? theme.colors.error : theme.colors.onSurface }]}>
+                        {insight.net90Days < 0 ? '−' : '+'}{rupiah(Math.abs(insight.net90Days))}
+                      </Text>
+                    </View>
+                    <View style={[styles.insightStat, styles.insightStatRight]}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Rata-rata / 30 hari</Text>
+                      <Text style={[styles.insightAmount, { color: theme.colors.onSurface }]}>
+                        {rupiah(insight.monthlyPaceRupiah)}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={[styles.insightFooter, { borderTopColor: theme.colors.outlineVariant }]}>
+                    <MaterialCommunityIcons
+                      name={insight.onSchedule === false ? 'information-outline' : insight.status === 'growing' ? 'calendar-check-outline' : 'calendar-clock-outline'}
+                      size={17}
+                      color={insight.onSchedule === false ? theme.colors.error : theme.colors.primary}
+                    />
+                    <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.onSurfaceVariant, lineHeight: 19 }}>
+                      {insight.onSchedule === false
+                        ? `Agar sesuai tenggat, perlu tambahan sekitar ${rupiah(insight.monthlyGapRupiah)} per bulan dari ritme sekarang.`
+                        : insight.onSchedule === true
+                          ? 'Ritme saat ini mencukupi rencana bulanan.'
+                          : insight.projectedDate
+                            ? `Perkiraan tercapai ${displayDate(insight.projectedDate)} jika ritme berlanjut.`
+                            : insight.status === 'declining'
+                              ? 'Pengambilan lebih besar dari setoran dalam 90 hari terakhir.'
+                              : 'Mulai setor secara rutin untuk melihat perkiraan selesai.'}
+                    </Text>
+                  </View>
+                  {!!insight.projectedDate && insight.onSchedule === false && (
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 6, paddingLeft: 22 }}>
+                      Proyeksi saat ini: {displayDate(insight.projectedDate)}
+                    </Text>
+                  )}
+                </View>
+              )}
               {relatedWallet && (
                 <View style={[styles.walletRow, { backgroundColor: theme.colors.surfaceVariant }]}>
                   <MaterialCommunityIcons name="bank-outline" size={20} color={theme.colors.primary} />
@@ -512,25 +645,143 @@ export default function GoalsScreen() {
 
               {historyOpen && (
                 <View style={[styles.historySection, { borderTopColor: theme.colors.outlineVariant }]}>
-                  <Text variant="titleSmall" style={[styles.bold, { color: theme.colors.onSurface }]}>Riwayat ({goal.entry_count})</Text>
-                  {historyLoading && <ActivityIndicator color={theme.colors.primary} />}
-                  {!historyLoading && history.length === 0 && (
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Belum ada catatan.</Text>
-                  )}
-                  {!historyLoading && history.map(entry => (
-                    <View key={entry.id} style={styles.historyItem}>
-                      <MaterialCommunityIcons name={entry.kind === 'deposit' ? 'arrow-down-left' : 'arrow-up-right'} size={20} color={entry.kind === 'deposit' ? theme.colors.primary : theme.colors.error} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }} numberOfLines={2}>{entry.note || (entry.kind === 'deposit' ? 'Setoran' : 'Pengurangan')}</Text>
-                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                          {displayDate(entry.occurred_on)} · {entrySources[entry.id] === 'rekening' ? 'Melalui rekening' : 'Catatan manual'}
-                        </Text>
-                      </View>
-                      <Text style={{ color: entry.kind === 'deposit' ? theme.colors.primary : theme.colors.error, fontWeight: '700', flexShrink: 1 }}>
-                        {entry.kind === 'deposit' ? '+' : '−'}{rupiah(entry.amount_rupiah)}
+                  <View style={styles.historyHeading}>
+                    <View style={{ flex: 1 }}>
+                      <Text variant="titleSmall" style={[styles.bold, { color: theme.colors.onSurface }]}>Riwayat Tabungan</Text>
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 3 }}>
+                        Setoran, pengambilan, dan koreksi tercatat di sini.
                       </Text>
                     </View>
-                  ))}
+                    <MaterialCommunityIcons name="history" size={22} color={theme.colors.primary} />
+                  </View>
+                  {historyLoading && <ActivityIndicator color={theme.colors.primary} />}
+                  {!historyLoading && history.length === 0 && (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>Belum ada catatan.</Text>
+                  )}
+                  {!historyLoading && history.length > 0 && historyView && (
+                    <>
+                      <View style={styles.historyFilters}>
+                        {([
+                          ['all', 'Semua'],
+                          ['deposit', 'Setoran'],
+                          ['withdrawal', 'Pengambilan'],
+                          ['correction', 'Koreksi'],
+                        ] as const).map(([value, label]) => (
+                          <Pressable
+                            key={value}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Filter riwayat ${label}`}
+                            accessibilityState={{ selected: historyFilter === value }}
+                            onPress={() => { setHistoryFilter(value); setHistoryVisibleLimit(30); }}
+                            style={[
+                              styles.historyChip,
+                              {
+                                backgroundColor: historyFilter === value ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
+                                borderColor: historyFilter === value ? theme.colors.primary : theme.colors.outlineVariant,
+                              },
+                            ]}
+                          >
+                            <Text variant="labelMedium" style={{ fontWeight: '700', color: historyFilter === value ? theme.colors.onPrimaryContainer : theme.colors.onSurfaceVariant }}>
+                              {label}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                      <View style={[styles.historySummary, { backgroundColor: theme.colors.surfaceVariant }]}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Jumlah aktivitas</Text>
+                          <Text variant="titleSmall" style={{ fontWeight: '800', color: theme.colors.onSurface }}>
+                            {historyView.matchedCount} catatan
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end', minWidth: 0, flex: 1 }}>
+                          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Perubahan bersih</Text>
+                          <Text variant="titleSmall" style={{ fontWeight: '800', color: historyView.netRupiah < 0 ? theme.colors.error : theme.colors.primary }}>
+                            {historyView.netRupiah < 0 ? '−' : '+'}{rupiah(Math.abs(historyView.netRupiah))}
+                          </Text>
+                        </View>
+                      </View>
+                      {historyView.matchedCount === 0 && (
+                        <View style={styles.historyEmptyFilter}>
+                          <MaterialCommunityIcons name="filter-variant-remove" size={23} color={theme.colors.onSurfaceVariant} />
+                          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                            Belum ada aktivitas untuk filter ini.
+                          </Text>
+                        </View>
+                      )}
+                      {historyView.months.map(month => (
+                        <View key={month.key}>
+                          <View style={[styles.historyMonthHeader, { borderBottomColor: theme.colors.outlineVariant }]}>
+                            <Text variant="labelLarge" style={{ fontWeight: '800', flex: 1, color: theme.colors.onSurface }}>
+                              {month.label}
+                            </Text>
+                            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                              {month.entries.length} aktivitas
+                            </Text>
+                          </View>
+                          {month.entries.map(entry => {
+                            const correctionStatus = correctionMap[entry.id];
+                            const linkedToWallet = entrySources[entry.id] === 'rekening';
+                            return (
+                              <View key={entry.id} style={[styles.historyItem, { borderBottomColor: theme.colors.outlineVariant }]}>
+                                <View style={styles.historyTopRow}>
+                                  <MaterialCommunityIcons
+                                    name={correctionStatus ? 'backup-restore' : entry.kind === 'deposit' ? 'arrow-down-left' : 'arrow-up-right'}
+                                    size={20}
+                                    color={correctionStatus ? theme.colors.onSurfaceVariant : entry.kind === 'deposit' ? theme.colors.primary : theme.colors.error}
+                                  />
+                                  <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+                                    <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }} numberOfLines={2}>
+                                      {entry.note || (entry.kind === 'deposit' ? 'Setoran' : 'Pengambilan')}
+                                    </Text>
+                                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                                      {displayDate(entry.occurred_on)} · {linkedToWallet ? 'Melalui rekening' : 'Catatan manual'}
+                                    </Text>
+                                    {!!correctionStatus && (
+                                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '700' }}>
+                                        {correctionStatus === 'cancelled' ? 'Telah dibatalkan' : 'Jurnal pembatalan'}
+                                      </Text>
+                                    )}
+                                  </View>
+                                  <Text style={{ color: entry.kind === 'deposit' ? theme.colors.primary : theme.colors.error, fontWeight: '700', textAlign: 'right', maxWidth: '39%', flexShrink: 1 }}>
+                                    {entry.kind === 'deposit' ? '+' : '−'}{rupiah(entry.amount_rupiah)}
+                                  </Text>
+                                </View>
+                                {!archived && !linkedToWallet && !correctionStatus && (
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Batalkan catatan ${entry.id}`}
+                                    disabled={busy}
+                                    onPress={() => setCorrectionPrompt({ goal, entry })}
+                                    style={({ pressed }) => [styles.correctionAction, pressed && { opacity: 0.55 }]}
+                                  >
+                                    <MaterialCommunityIcons name="backup-restore" size={17} color={theme.colors.primary} />
+                                    <Text variant="labelMedium" style={{ color: theme.colors.primary, fontWeight: '700' }}>Batalkan catatan</Text>
+                                  </Pressable>
+                                )}
+                              </View>
+                            );
+                          })}
+                        </View>
+                      ))}
+                      {historyView.hasMore && (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Tampilkan riwayat berikutnya"
+                          onPress={() => setHistoryVisibleLimit(limit => limit + 30)}
+                          style={[styles.historyShowMore, { borderColor: theme.colors.outlineVariant }]}
+                        >
+                          <MaterialCommunityIcons name="chevron-down" size={18} color={theme.colors.primary} />
+                          <Text variant="labelLarge" style={{ color: theme.colors.primary, fontWeight: '800' }}>
+                            Muat 30 berikutnya
+                          </Text>
+                        </Pressable>
+                      )}
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', paddingTop: 8 }}>
+                        {historyView.displayedCount} dari {historyView.matchedCount} catatan ditampilkan
+                      </Text>
+                    </>
+                  )}
                 </View>
               )}
             </View>
@@ -557,7 +808,8 @@ export default function GoalsScreen() {
             <Text style={{ color: theme.colors.onSurface }}>2. Hubungkan rekening khusus lewat menu tiga titik jika ingin memindahkan uang sungguhan.</Text>
             <Text style={{ color: theme.colors.onSurface }}>3. Tekan Setor atau Ambil. Progres target dan transfer rekening dicatat sekaligus bila terhubung.</Text>
             <Text style={{ color: theme.colors.onSurface }}>4. Tekan Riwayat untuk melihat semua setoran dan pengambilan.</Text>
-            <Text style={{ color: theme.colors.onSurface }}>5. Transfer biasa di menu Transaksi tidak otomatis menjadi setoran target.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>5. Bagian Ritme Tabungan menampilkan perkiraan dari riwayat 90 hari, bukan perintah pemindahan uang.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>6. Transfer biasa di menu Transaksi tidak otomatis menjadi setoran target.</Text>
           </View>
         )}
       </ScrollView>
@@ -791,6 +1043,51 @@ export default function GoalsScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={correctionPrompt !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => { if (!busy) setCorrectionPrompt(null); }}
+      >
+        <View style={styles.modalRoot}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Tutup konfirmasi pembatalan"
+            onPress={() => { if (!busy) setCorrectionPrompt(null); }}
+            style={[StyleSheet.absoluteFill, styles.backdrop]}
+          />
+          <View style={[styles.sheet, { backgroundColor: theme.colors.surface }]}>
+            <View style={styles.confirmIcon}>
+              <MaterialCommunityIcons name="backup-restore" size={28} color={theme.colors.primary} />
+            </View>
+            <Text variant="titleLarge" style={[styles.bold, { color: theme.colors.onSurface }]}>
+              Batalkan catatan manual?
+            </Text>
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 22, marginTop: 8 }}>
+              {correctionPrompt
+                ? `Catatan ${correctionPrompt.entry.kind === 'deposit' ? 'setoran' : 'pengambilan'} sebesar ${rupiah(correctionPrompt.entry.amount_rupiah)} akan dibatalkan melalui jurnal koreksi. Catatan lama tetap tersimpan, dan saldo rekening tidak berubah.`
+                : ''}
+            </Text>
+            <View style={styles.confirmButtons}>
+              <Action title="Kembali" icon="close" flex={1} disabled={busy} onPress={() => setCorrectionPrompt(null)} />
+              <Action
+                title="Ya, Batalkan"
+                icon="backup-restore"
+                variant="primary"
+                flex={1}
+                disabled={busy}
+                onPress={() => {
+                  if (correctionPrompt) {
+                    void applyManualCorrection(correctionPrompt.goal.id, correctionPrompt.entry.id);
+                  }
+                }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -831,10 +1128,27 @@ const styles = StyleSheet.create({
   buttonsRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
   historyButton: { marginTop: 10 },
   planRow: { borderWidth: 1, borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 13 },
+  insightBox: { marginTop: 12, borderRadius: 15, paddingHorizontal: 14, paddingVertical: 13 },
+  insightHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  insightTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  insightStatRow: { flexDirection: 'row', gap: 12, marginTop: 14, marginBottom: 12 },
+  insightStat: { flex: 1, minWidth: 0 },
+  insightStatRight: { alignItems: 'flex-end' },
+  insightAmount: { fontSize: 14, lineHeight: 21, fontWeight: '800', marginTop: 3, includeFontPadding: false },
+  insightFooter: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 10 },
   walletRow: { borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 12 },
   walletOption: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 12, minHeight: 64 },
   historySection: { borderTopWidth: 1, marginTop: 16, paddingTop: 16 },
-  historyItem: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 13 },
+  historyHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 },
+  historyFilters: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 12 },
+  historyChip: { borderRadius: 30, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 9, minHeight: 38, justifyContent: 'center' },
+  historySummary: { flexDirection: 'row', borderRadius: 13, paddingHorizontal: 12, paddingVertical: 13, gap: 10, marginBottom: 8 },
+  historyMonthHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 16, paddingBottom: 9, borderBottomWidth: 1 },
+  historyShowMore: { borderRadius: 13, borderWidth: 1, minHeight: 45, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 13 },
+  historyEmptyFilter: { alignItems: 'center', paddingVertical: 22, gap: 9 },
+  historyItem: { borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 11, gap: 7 },
+  historyTopRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  correctionAction: { alignSelf: 'flex-start', marginLeft: 30, paddingVertical: 7, paddingHorizontal: 3, flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 34 },
   auditHighlight: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderRadius: 14 },
   auditStats: { flexDirection: 'row', borderWidth: 1, borderRadius: 12, padding: 14 },
   auditProblem: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderWidth: 1, borderRadius: 12, padding: 12 },
