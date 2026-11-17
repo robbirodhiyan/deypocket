@@ -1,55 +1,38 @@
-# DeyPocket — Goals & Manage Stability v2
+# DeyPocket — Updates Screen Modern
 
-Paket **siap paste, tanpa installer**. Berdasarkan source Sprint 7 sebelumnya dan dua screenshot tampilan pada 16 November 2026.
+Pembaruan UI/UX `src/app/updates.tsx`, tanpa installer dan tanpa dependency baru.
 
-## Perbaikan
+## Pemasangan
 
-1. `src/app/goals/index.tsx`
-   - Kartu dirender menggunakan `View` dengan alur vertikal normal, bukan nested `Card.Content` yang berpotensi memunculkan tinggi/overlap tak terduga pada web.
-   - Angka terkumpul memiliki warna teks eksplisit, tidak lagi berisiko tidak terlihat pada dark theme.
-   - Nominal TARGET/SISA berada dalam panel terpisah **di atas** tombol Setor/Riwayat, bukan bertumpuk di belakangnya.
-   - Menu tiga titik diganti bottom-sheet `Modal`, tidak menambah tinggi kartu maupun menimpa tombol.
-   - Konfirmasi Arsip, Aktifkan, Hapus menggunakan `Modal` lintas Android/web, **bukan `Alert.alert`** yang mungkin tidak tampil pada web.
-   - Error/sukses operasi tampil sebagai pesan pada halaman.
-   - Pembaruan list langsung setelah operasi selesai.
-
-2. `src/app/goals/manage.tsx`
-   - Form ringkas dengan pemisah informasi utama dan detail opsional.
-   - Input nominal, preset, dan preview tidak saling bertumpuk.
-   - Tindakan buat/edit/setor/kurangi dipisahkan menurut `mode` URL; validasi aman dan tombol Simpan bisa disentuh saat keyboard terbuka.
-
-3. `src/features/deypocket/goals-repository.ts`
-   - Tetap menggunakan query atomic delete, dengan pengecekan ulang langsung di SQLite: hanya target tanpa *satu pun* baris riwayat yang boleh dihapus permanen.
-   - Tidak mengubah tabel transaksi lama atau perlu migration baru.
-
-## Instalasi (tanpa installer)
-
-1. Ekstrak ZIP di folder lain, misalnya `Downloads\\DeyPocketGoalsFix`.
-2. Backup ketiga file lama jika perlu.
-3. Copy folder `src` dari ZIP ke folder proyek DeyPocket yang berisi `package.json` dan pilih **Replace files**.
-4. Buka CMD di folder proyek:
+1. Ekstrak ZIP di luar direktori proyek.
+2. Salin folder `src` ke root DeyPocket (folder yang berisi `package.json`).
+3. Replace `src/app/updates.tsx`.
+4. Validasi dari CMD:
 
 ```cmd
+cd /d C:\laragon\project\deypocket
 npm run validate
 npx tsc --noEmit
-npx expo start --clear
 ```
 
-Pastikan Metro memuat build terbaru. Jika aplikasi web masih tampil lama, lakukan hard refresh. Jika menggunakan APK, reload aplikasi atau publikasikan OTA setelah validasi berhasil.
+## Perubahan
 
-## Tes penerimaan yang penting
+- Informasi teknis (channel, runtime, build, sumber GitHub, SDK, dan developer notes) tidak lagi tampil.
+- Tidak ada pengulangan label "DEYPOCKET" dan kartu informasi tidak penting.
+- Menampilkan versi ringkas dan dua pilihan pembaruan yang mudah dipahami.
+- Tombol OTA masih memanggil `checkOtaSession`, `downloadOtaSession`, dan `reloadOtaSession`.
+- Tombol APK masih memeriksa GitHub Release publik dan membuka tautan resmi yang dikembalikan oleh service `update-release`.
+- Komponen OTA menggunakan state global yang sama dengan dialog update saat startup.
+- Menampilkan status hanya bila ada hasil yang perlu diketahui pengguna.
+- Dialog konfirmasi ringkas dan mempertahankan peringatan terkait data lokal.
+- Kartu APK hanya muncul pada Android jika konfigurasi release tersedia.
 
-1. Buat target `Tes Hapus` tanpa setoran.
-2. Pada kartu target, tekan **tiga titik → Hapus Permanen → Hapus**. Target hilang dari daftar.
-3. Buat target lain, tekan **tiga titik → Arsipkan Target → Arsipkan**. Target pindah ke tab **Arsip**.
-4. Pada tab Arsip, tekan **Aktifkan**, lalu konfirmasi. Target kembali ke tab **Aktif**.
-5. Pada target dengan setoran, tindakan **Hapus Permanen** tidak ditampilkan. Jika setor lalu kurangi sampai Rp0, riwayat tetap ada sehingga hapus permanen tetap dilarang.
-6. Cek layar kecil: nominal Terkumpul, panel TARGET/SISA, dan tombol Setor/Riwayat harus tampil secara berurutan tanpa overlap.
-7. Pada Manage, buat target, ubah nominal, catat setoran, kurangi sebagian setoran, lalu cek Riwayat.
+## Uji fungsional
 
-## Catatan
+- Tanpa update: status "sudah terbaru" sesudah pemeriksaan.
+- Ada update OTA: unduh -> pasang -> konfirmasi -> reload.
+- Offline: menampilkan pesan singkat dan tombol "Coba Lagi".
+- APK lebih baru: tampil versi baru -> konfirmasi -> membuka tautan unduhan.
+- Selama proses OTA/cek APK, tombol tidak menyebabkan operasi paralel.
 
-- Tidak menambah npm dependency atau mengubah native Expo config.
-- Tidak memodifikasi saldo rekening saat catat setoran; hanya pencatatan progres tabungan.
-- Source baru telah diperiksa secara sintaks TypeScript/TSX. Query penghapusan diuji pada SQLite dengan kasus target kosong dan target yang memiliki riwayat tetapi saldonya kembali nol.
-- Pengujian `npm run validate` pada proyek Windows serta uji visual Android/web nyata masih harus dilakukan di proyek DeyPocket pengguna.
+Catatan: file telah diuji sintaks TSX, tetapi pemeriksaan tipe dan uji Android penuh dilakukan di proyek DeyPocket.

@@ -1,6 +1,7 @@
-import { Stack } from 'expo-router';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
+import { Stack } from 'expo-router';
 import * as Updates from 'expo-updates';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Platform, ScrollView, View } from 'react-native';
@@ -8,10 +9,7 @@ import {
   ActivityIndicator,
   Button,
   Card,
-  Chip,
   Dialog,
-  Divider,
-  HelperText,
   Portal,
   ProgressBar,
   Text,
@@ -25,268 +23,477 @@ import {
   type PublicApkRelease,
 } from '../features/deypocket/update-release';
 import {
-  getOtaEnvironment,
-  type OtaEnvironment,
-} from '../features/deypocket/update-ota';
-import { checkOtaSession, downloadOtaSession, reloadOtaSession, useOtaSession } from '../features/deypocket/ota-session';
+  checkOtaSession,
+  downloadOtaSession,
+  reloadOtaSession,
+  useOtaSession,
+} from '../features/deypocket/ota-session';
 
-type Phase = 'idle' | 'checking' | 'downloading' | 'ready' | 'none' | 'available' | 'unsupported' | 'error';
+type ApkPhase = 'idle' | 'checking' | 'none' | 'available' | 'error';
 
-const EMPTY_OTA: OtaEnvironment = {
-  supported: false,
-  description: 'Memeriksa dukungan OTA...',
-  channel: null,
-  runtimeVersion: null,
-  updateId: null,
-  embedded: null,
-};
+function UpdateStatus({
+  icon,
+  message,
+  danger = false,
+}: {
+  icon: 'check-circle-outline' | 'information-outline' | 'alert-circle-outline';
+  message: string;
+  danger?: boolean;
+}) {
+  const theme = useTheme();
 
-function ErrorLine({ message }: { message: string }) {
-  if (!message) return null;
-  return <HelperText type="error" visible>{message}</HelperText>;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 9,
+        padding: 12,
+        borderRadius: 13,
+        backgroundColor: danger
+          ? theme.colors.errorContainer
+          : theme.colors.surfaceVariant,
+      }}
+    >
+      <MaterialCommunityIcons
+        name={icon}
+        size={19}
+        color={danger ? theme.colors.onErrorContainer : theme.colors.onSurfaceVariant}
+      />
+      <Text
+        variant="bodySmall"
+        style={{
+          flex: 1,
+          lineHeight: 19,
+          color: danger ? theme.colors.onErrorContainer : theme.colors.onSurfaceVariant,
+        }}
+      >
+        {message}
+      </Text>
+    </View>
+  );
 }
 
 export default function UpdateManagerScreen() {
   const theme = useTheme();
-  const mounted = useRef(true);
-  const busy = useRef(false);
-  const [environment, setEnvironment] = useState<OtaEnvironment>(EMPTY_OTA);
+  const mounted = useRef(false);
+  const checkingApk = useRef(false);
+
+  // Gunakan sesi OTA yang sama dengan dialog pembaruan saat startup.
   const otaSession = useOtaSession();
   const otaPhase = otaSession.phase;
-  const otaMessage = otaSession.message;
-  const updateState = Updates.useUpdates();
-  const progress = (updateState as { downloadProgress?: number }).downloadProgress;
-  const hasProgress = typeof progress === 'number' && Number.isFinite(progress);
-  const safeProgress = typeof progress === 'number' && Number.isFinite(progress)
-    ? Math.max(0, Math.min(1, progress)) : 0;
-  const [apkPhase, setApkPhase] = useState<Phase>('idle');
-  const [apkMessage, setApkMessage] = useState('');
+  const otaState = Updates.useUpdates();
+  const rawProgress = (otaState as { downloadProgress?: number }).downloadProgress;
+  const hasProgress = typeof rawProgress === 'number' && Number.isFinite(rawProgress);
+  const progress = hasProgress
+    ? Math.min(1, Math.max(0, rawProgress))
+    : 0;
+
+  const [apkPhase, setApkPhase] = useState<ApkPhase>('idle');
   const [apkRelease, setApkRelease] = useState<PublicApkRelease | null>(null);
   const [confirmReload, setConfirmReload] = useState(false);
   const [confirmApk, setConfirmApk] = useState(false);
 
-  // Installed/native version is deliberately used instead of OTA-bundle version.
-  const version = Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '0.0.0';
-  const build = Application.nativeBuildVersion ?? '—';
-  const configuredRelease = project.release;
-  const owner = configuredRelease?.owner?.trim() ?? '';
-  const repository = configuredRelease?.repository?.trim() ?? '';
-  const canCheckPublicApk = Platform.OS === 'android' && !!owner && !!repository;
+  const appVersion =
+    Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '0.0.0';
+
+  const owner = project.release?.owner?.trim() ?? '';
+  const repository = project.release?.repository?.trim() ?? '';
+  const canCheckApk = Platform.OS === 'android' && !!owner && !!repository;
+  const otaBusy = otaPhase === 'checking' || otaPhase === 'downloading';
+  const busy = otaBusy || apkPhase === 'checking';
 
   useEffect(() => {
     mounted.current = true;
-    void getOtaEnvironment().then((info) => {
-      if (mounted.current) {
-        setEnvironment(info);
-      }
-    });
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
-  const safeError = (error: unknown) => error instanceof Error ? error.message : 'Terjadi kesalahan tak terduga.';
-
-  // Same shared session is used by the startup dialog and Settings.
-  const doCheckOta = useCallback(async () => {
+  const checkOta = useCallback(async () => {
     await checkOtaSession(false);
   }, []);
 
-  const doDownloadOta = useCallback(async () => {
+  const downloadOta = useCallback(async () => {
     await downloadOtaSession();
   }, []);
 
-  const doReloadOta = useCallback(async () => {
+  const applyOta = useCallback(async () => {
     setConfirmReload(false);
     await reloadOtaSession();
   }, []);
 
-  const doCheckApk = useCallback(async () => {
-    if (busy.current) return;
-    busy.current = true;
+  const checkApk = useCallback(async () => {
+    if (!canCheckApk || checkingApk.current) return;
+
+    checkingApk.current = true;
     setApkPhase('checking');
-    setApkMessage('');
     setApkRelease(null);
+
     try {
-      const result = await fetchPublicApkRelease(owner, repository, version);
+      const result = await fetchPublicApkRelease(owner, repository, appVersion);
       if (!mounted.current) return;
-      if (result.kind === 'available' && compareVersions(result.release.version, version) > 0) {
+
+      if (
+        result.kind === 'available' &&
+        compareVersions(result.release.version, appVersion) > 0
+      ) {
         setApkRelease(result.release);
         setApkPhase('available');
-        setApkMessage(`APK versi ${result.release.version} tersedia.`);
       } else {
         setApkPhase('none');
-        setApkMessage('Tidak ada APK publik yang lebih baru dari versi terpasang.');
       }
     } catch (error) {
-      if (!mounted.current) return;
-      setApkPhase('error');
-      setApkMessage(safeError(error));
-    } finally { busy.current = false; }
-  }, [owner, repository, version]);
+      console.warn('[Updates] APK check failed:', error);
+      if (mounted.current) setApkPhase('error');
+    } finally {
+      checkingApk.current = false;
+    }
+  }, [appVersion, canCheckApk, owner, repository]);
 
-  const openRelease = useCallback(async () => {
+  const openApk = useCallback(async () => {
     setConfirmApk(false);
     if (!apkRelease) return;
+
     try {
       await Linking.openURL(apkRelease.url);
     } catch (error) {
-      setApkPhase('error');
-      setApkMessage(safeError(error));
+      console.warn('[Updates] Could not open APK download:', error);
+      if (mounted.current) setApkPhase('error');
     }
   }, [apkRelease]);
 
-  const updating = otaPhase === 'checking' || otaPhase === 'downloading' || apkPhase === 'checking';
+  const otaDescription = (() => {
+    switch (otaPhase) {
+      case 'checking':
+        return 'Sedang memeriksa pembaruan...';
+      case 'downloading':
+        return 'Sedang mengunduh pembaruan...';
+      case 'available':
+        return 'Pembaruan fitur baru tersedia.';
+      case 'ready':
+        // Pesan sesi juga mencakup peringatan jika ada transaksi yang belum disimpan.
+        return otaSession.message || 'Pembaruan siap dipasang.';
+      case 'up-to-date':
+        return 'Fitur DeyPocket sudah terbaru.';
+      case 'offline':
+        return 'Tidak ada koneksi internet. Periksa jaringan lalu coba lagi.';
+      case 'error':
+        return 'Pembaruan belum dapat diperiksa. Silakan coba lagi.';
+      case 'unsupported':
+        return 'Pembaruan langsung tidak tersedia pada versi aplikasi ini.';
+      default:
+        return '';
+    }
+  })();
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Pembaruan Aplikasi', headerShown: true }} />
+      <Stack.Screen options={{ title: 'Pembaruan', headerShown: true }} />
+
       <ScrollView
         style={{ flex: 1, backgroundColor: theme.colors.background }}
-        contentContainerStyle={{ width: '100%', maxWidth: 780, alignSelf: 'center', padding: 20, paddingBottom: 65, gap: 16 }}
-        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{
+          width: '100%',
+          maxWidth: 650,
+          alignSelf: 'center',
+          paddingHorizontal: 18,
+          paddingTop: 22,
+          paddingBottom: 70,
+          gap: 18,
+        }}
       >
-        <View style={{ gap: 5 }}>
-          <Text variant="labelLarge" style={{ color: theme.colors.primary, fontWeight: '800', letterSpacing: 1 }}>DEYPOCKET</Text>
-          <Text variant="headlineMedium" style={{ fontWeight: '800' }}>Pembaruan Aplikasi</Text>
-          <Text style={{ color: theme.colors.onSurfaceVariant }}>
-            Cek pembaruan fitur tanpa instal ulang, atau cari APK versi terbaru.
+        <View style={{ gap: 8 }}>
+          <Text
+            variant="headlineSmall"
+            style={{ fontWeight: '800', letterSpacing: -0.5 }}
+          >
+            Pembaruan Aplikasi
           </Text>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, lineHeight: 21 }}
+          >
+            Nikmati fitur dan perbaikan terbaru untuk DeyPocket.
+          </Text>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 7,
+              alignSelf: 'flex-start',
+              borderRadius: 10,
+              paddingHorizontal: 11,
+              paddingVertical: 7,
+              backgroundColor: theme.colors.surfaceVariant,
+            }}
+          >
+            <MaterialCommunityIcons
+              name="cellphone"
+              size={15}
+              color={theme.colors.onSurfaceVariant}
+            />
+            <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+              Versi {appVersion}
+            </Text>
+          </View>
         </View>
 
-        <Card mode="contained" style={{ borderRadius: 22 }}>
-          <Card.Content style={{ gap: 12, padding: 19 }}>
-            <Text variant="titleMedium" style={{ fontWeight: '800' }}>Versi terpasang</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-              <Text variant="headlineMedium" style={{ fontWeight: '800' }}>v{version}</Text>
-              <Chip compact icon="cellphone">Build {build}</Chip>
+        <Card
+          mode="outlined"
+          style={{
+            borderRadius: 20,
+            borderColor: theme.colors.outlineVariant,
+            backgroundColor: theme.colors.surface,
+          }}
+        >
+          <Card.Content style={{ padding: 18, gap: 15 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 13 }}>
+              <View
+                style={{
+                  height: 45,
+                  width: 45,
+                  borderRadius: 15,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: theme.colors.primaryContainer,
+                }}
+              >
+                <MaterialCommunityIcons
+                  name="auto-fix"
+                  size={23}
+                  color={theme.colors.onPrimaryContainer}
+                />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text variant="titleMedium" style={{ fontWeight: '800' }}>
+                  Pembaruan Fitur
+                </Text>
+                <Text
+                  variant="bodySmall"
+                  style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}
+                >
+                  Perbarui fitur tanpa menginstal ulang aplikasi.
+                </Text>
+              </View>
             </View>
-            <Divider />
-            <View style={{ gap: 5 }}>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                Channel: {environment.channel ?? 'Tidak tersedia'}
-              </Text>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                Runtime: {environment.runtimeVersion ?? 'Tidak tersedia'}
-              </Text>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                Sumber: {environment.embedded === null ? 'Tidak diketahui' : environment.embedded ? 'APK bawaan' : 'OTA terunduh'}
-              </Text>
-            </View>
-          </Card.Content>
-        </Card>
 
-        <Card mode="outlined" style={{ borderRadius: 22, borderColor: theme.colors.outlineVariant }}>
-          <Card.Content style={{ gap: 14, padding: 18 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <View style={{ width: 43, height: 43, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.primaryContainer }}>
-                <Text variant="titleMedium" style={{ color: theme.colors.onPrimaryContainer }}>OTA</Text>
-              </View>
-              <View style={{ flex: 1, gap: 3 }}>
-                <Text variant="titleMedium" style={{ fontWeight: '800' }}>Update Fitur</Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Tampilan, JavaScript dan aset melalui Expo EAS</Text>
-              </View>
-            </View>
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{environment.description}</Text>
-            {otaPhase === 'checking' && <ActivityIndicator />}
+            {!!otaDescription && otaPhase !== 'checking' && otaPhase !== 'downloading' && (
+              <UpdateStatus
+                icon={
+                  otaPhase === 'error' || otaPhase === 'offline'
+                    ? 'alert-circle-outline'
+                    : otaPhase === 'available' || otaPhase === 'ready' || otaPhase === 'unsupported'
+                      ? 'information-outline'
+                      : 'check-circle-outline'
+                }
+                danger={otaPhase === 'error' || otaPhase === 'offline'}
+                message={otaDescription}
+              />
+            )}
+
             {otaPhase === 'downloading' && (
-              <View style={{ gap: 8 }}>
-                {hasProgress ? <ProgressBar progress={safeProgress} /> : <ActivityIndicator />}
-                <Text variant="bodySmall">
-                  {hasProgress ? `Mengunduh ${Math.round(safeProgress * 100)}%` : 'Mengunduh pembaruan...'}
+              <View style={{ gap: 9 }}>
+                {hasProgress ? (
+                  <ProgressBar progress={progress} color={theme.colors.primary} />
+                ) : (
+                  <ActivityIndicator size="small" />
+                )}
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                  {hasProgress
+                    ? `Mengunduh... ${Math.round(progress * 100)}%`
+                    : 'Sedang mengunduh pembaruan...'}
                 </Text>
               </View>
             )}
-            {otaPhase !== 'error' && otaPhase !== 'offline' && !!otaMessage ? <Text variant="bodyMedium">{otaMessage}</Text> : null}
-            {(otaPhase === 'error' || otaPhase === 'offline') && <ErrorLine message={otaMessage} />}
-            {otaPhase === 'available' && (
-              <View style={{ gap: 7, padding: 12, borderRadius: 12, backgroundColor: theme.colors.surfaceVariant }}>
-                <Text variant="titleSmall" style={{ fontWeight: '700' }}>{otaSession.changelogTitle}</Text>
-                {otaSession.changelog.map((line, i) =>
-                  <Text key={`${i}-${line}`} variant="bodySmall">• {line}</Text>
-                )}
+
+            {otaPhase === 'available' && otaSession.changelog.length > 0 && (
+              <View style={{ gap: 5 }}>
+                {otaSession.changelog.slice(0, 3).map((line, index) => (
+                  <Text
+                    key={`${index}-${line}`}
+                    variant="bodySmall"
+                    style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}
+                  >
+                    • {line}
+                  </Text>
+                ))}
               </View>
             )}
+
             {otaPhase === 'ready' ? (
-              <Button mode="contained" icon="restart" onPress={() => setConfirmReload(true)} disabled={updating}>Terapkan & Muat Ulang</Button>
-            ) : otaPhase === 'available' ? (
-              <Button mode="contained" icon="download" onPress={() => void doDownloadOta()} disabled={updating}>Unduh Update</Button>
-            ) : (
-              <Button mode="contained-tonal" icon="refresh" onPress={() => void doCheckOta()} disabled={!environment.supported || updating} loading={otaPhase === 'checking'}>
-                {otaPhase === 'offline' || otaPhase === 'error' ? 'Coba Lagi' : 'Cek Pembaruan OTA'}
+              <Button
+                mode="contained"
+                icon="restart"
+                disabled={busy}
+                contentStyle={{ minHeight: 48 }}
+                style={{ borderRadius: 13 }}
+                onPress={() => setConfirmReload(true)}
+              >
+                Pasang Pembaruan
               </Button>
-            )}
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              OTA memerlukan koneksi internet untuk mengunduh. Data transaksi SQLite tidak dihapus saat update JavaScript.
-            </Text>
+            ) : otaPhase === 'available' ? (
+              <Button
+                mode="contained"
+                icon="download"
+                disabled={busy}
+                contentStyle={{ minHeight: 48 }}
+                style={{ borderRadius: 13 }}
+                onPress={() => void downloadOta()}
+              >
+                Unduh Pembaruan
+              </Button>
+            ) : otaPhase !== 'unsupported' && otaPhase !== 'downloading' ? (
+              <Button
+                mode="contained-tonal"
+                icon="refresh"
+                loading={otaPhase === 'checking'}
+                disabled={busy}
+                contentStyle={{ minHeight: 48 }}
+                style={{ borderRadius: 13 }}
+                onPress={() => void checkOta()}
+              >
+                {otaPhase === 'error' || otaPhase === 'offline'
+                  ? 'Coba Lagi'
+                  : otaPhase === 'checking'
+                    ? 'Memeriksa...'
+                    : 'Periksa Pembaruan'}
+              </Button>
+            ) : null}
           </Card.Content>
         </Card>
 
-        <Card mode="outlined" style={{ borderRadius: 22, borderColor: theme.colors.outlineVariant }}>
-          <Card.Content style={{ gap: 13, padding: 18 }}>
-            <View style={{ gap: 4 }}>
-              <Text variant="titleMedium" style={{ fontWeight: '800' }}>Update APK Android</Text>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                Dibutuhkan jika ada perubahan modul native, Expo SDK, atau runtime.
-              </Text>
-            </View>
-            <View style={{ gap: 4 }}>
-              <Text variant="bodySmall">Sumber: GitHub Releases publik</Text>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                {owner && repository ? `${owner}/${repository}` : 'Repository release belum disetel'}
-              </Text>
-            </View>
-            {apkPhase === 'checking' && <ActivityIndicator />}
-            {apkPhase !== 'error' && !!apkMessage && <Text variant="bodyMedium">{apkMessage}</Text>}
-            {apkPhase === 'error' && <ErrorLine message={apkMessage} />}
-            {apkRelease && apkPhase === 'available' && (
-              <View style={{ gap: 9, backgroundColor: theme.colors.surfaceVariant, borderRadius: 14, padding: 12 }}>
-                <Text variant="titleSmall" style={{ fontWeight: '700' }}>{apkRelease.name}</Text>
-                {!!apkRelease.releaseNotes && (
-                  <Text variant="bodySmall" numberOfLines={5}>{apkRelease.releaseNotes}</Text>
-                )}
-                <Button mode="contained" icon="open-in-new" onPress={() => setConfirmApk(true)}>
-                  Buka Unduhan APK
-                </Button>
+        {canCheckApk && (
+          <Card
+            mode="outlined"
+            style={{
+              borderRadius: 20,
+              borderColor: theme.colors.outlineVariant,
+              backgroundColor: theme.colors.surface,
+            }}
+          >
+            <Card.Content style={{ padding: 18, gap: 15 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 13 }}>
+                <View
+                  style={{
+                    height: 45,
+                    width: 45,
+                    borderRadius: 15,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: theme.colors.secondaryContainer,
+                  }}
+                >
+                  <MaterialCommunityIcons
+                    name="cellphone-arrow-down"
+                    size={23}
+                    color={theme.colors.onSecondaryContainer}
+                  />
+                </View>
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text variant="titleMedium" style={{ fontWeight: '800' }}>
+                    Versi Android Terbaru
+                  </Text>
+                  <Text
+                    variant="bodySmall"
+                    style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}
+                  >
+                    Cek apakah tersedia versi aplikasi yang lebih baru.
+                  </Text>
+                </View>
               </View>
-            )}
-            <Button mode="outlined" icon="cellphone-arrow-down" onPress={() => void doCheckApk()}
-              disabled={!canCheckPublicApk || updating} loading={apkPhase === 'checking'}>
-              Cek APK Terbaru
-            </Button>
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              Repository GitHub privat tidak dapat diperiksa tanpa autentikasi. Gunakan link unduhan privat melalui browser terautentikasi; jangan menyimpan token akses dalam APK. Android meminta persetujuan pengguna untuk instalasi.
-            </Text>
-          </Card.Content>
-        </Card>
 
-        <Card mode="contained" style={{ borderRadius: 18 }}>
-          <Card.Content style={{ gap: 8 }}>
-            <Text variant="titleSmall" style={{ fontWeight: '700' }}>Informasi penting</Text>
-            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              Git branch master berbeda dari EAS channel preview. Update OTA hanya dikirim ke APK dengan channel dan runtime yang kompatibel. Untuk update APK, gunakan signing key dan Android package yang sama agar data lokal tetap dipertahankan.
-            </Text>
-          </Card.Content>
-        </Card>
+              {apkPhase === 'checking' && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <ActivityIndicator size="small" />
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    Memeriksa versi terbaru...
+                  </Text>
+                </View>
+              )}
+              {apkPhase === 'none' && (
+                <UpdateStatus icon="check-circle-outline" message="Versi Android sudah terbaru." />
+              )}
+              {apkPhase === 'error' && (
+                <UpdateStatus
+                  icon="alert-circle-outline"
+                  danger
+                  message="Belum bisa memeriksa versi Android. Periksa internet lalu coba lagi."
+                />
+              )}
+              {apkPhase === 'available' && apkRelease && (
+                <UpdateStatus
+                  icon="information-outline"
+                  message={`Versi ${apkRelease.version} tersedia untuk diunduh.`}
+                />
+              )}
+
+              {apkPhase === 'available' && apkRelease ? (
+                <Button
+                  mode="contained"
+                  icon="download"
+                  disabled={busy}
+                  contentStyle={{ minHeight: 48 }}
+                  style={{ borderRadius: 13 }}
+                  onPress={() => setConfirmApk(true)}
+                >
+                  Unduh Versi {apkRelease.version}
+                </Button>
+              ) : (
+                <Button
+                  mode="outlined"
+                  icon="refresh"
+                  loading={apkPhase === 'checking'}
+                  disabled={busy}
+                  contentStyle={{ minHeight: 48 }}
+                  style={{ borderRadius: 13 }}
+                  onPress={() => void checkApk()}
+                >
+                  {apkPhase === 'error' ? 'Coba Lagi' : 'Periksa Versi Android'}
+                </Button>
+              )}
+            </Card.Content>
+          </Card>
+        )}
       </ScrollView>
 
       <Portal>
-        <Dialog visible={confirmReload} onDismiss={() => setConfirmReload(false)}>
-          <Dialog.Title>Muat ulang DeyPocket?</Dialog.Title>
+        <Dialog
+          visible={confirmReload}
+          onDismiss={() => setConfirmReload(false)}
+          style={{ borderRadius: 22, backgroundColor: theme.colors.surface }}
+        >
+          <Dialog.Title>Pasang pembaruan?</Dialog.Title>
           <Dialog.Content>
-            <Text>Pastikan transaksi atau form yang sedang diedit sudah disimpan. Aplikasi akan memuat ulang untuk menjalankan pembaruan OTA.</Text>
+            <Text variant="bodyMedium" style={{ lineHeight: 21 }}>
+              Simpan dulu transaksi atau perubahan yang sedang kamu kerjakan. DeyPocket akan dimuat ulang.
+            </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setConfirmReload(false)}>Batal</Button>
-            <Button onPress={() => void doReloadOta()}>Muat Ulang</Button>
+            <Button mode="contained" onPress={() => void applyOta()}>
+              Pasang
+            </Button>
           </Dialog.Actions>
         </Dialog>
-        <Dialog visible={confirmApk} onDismiss={() => setConfirmApk(false)}>
-          <Dialog.Title>Buka halaman unduhan?</Dialog.Title>
+
+        <Dialog
+          visible={confirmApk}
+          onDismiss={() => setConfirmApk(false)}
+          style={{ borderRadius: 22, backgroundColor: theme.colors.surface }}
+        >
+          <Dialog.Title>Unduh versi terbaru?</Dialog.Title>
           <Dialog.Content>
-            <Text>Unduh APK dari GitHub Releases lalu setujui proses instalasi di Android. Pastikan APK ditandatangani dengan signing key yang sama dan lakukan backup data terlebih dahulu.</Text>
+            <Text variant="bodyMedium" style={{ lineHeight: 21 }}>
+              Halaman unduhan akan dibuka. Jangan hapus aplikasi lama agar data keuangan yang tersimpan di perangkat tidak ikut terhapus.
+            </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setConfirmApk(false)}>Batal</Button>
-            <Button onPress={() => void openRelease()}>Lanjutkan</Button>
+            <Button mode="contained" onPress={() => void openApk()}>
+              Lanjutkan
+            </Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
