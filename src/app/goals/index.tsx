@@ -19,6 +19,10 @@ import { getWallets, type WalletRecord } from '../../features/deypocket/finance-
 import { getGoalWalletLinks, setGoalWalletLink } from '../../features/deypocket/goal-wallet-repository';
 import { calculateGoalPlan } from '../../features/deypocket/goal-planner';
 import {
+  auditSavingsGoals, getGoalEntrySourceMap,
+  type GoalAuditReport, type GoalEntrySourceMap,
+} from '../../features/deypocket/goal-audit';
+import {
   deleteSavingsGoal,
   getGoalEntries,
   getSavingsGoals,
@@ -110,6 +114,11 @@ export default function GoalsScreen() {
   const [historyId, setHistoryId] = useState<number | null>(null);
   const [history, setHistory] = useState<GoalEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [entrySources, setEntrySources] = useState<GoalEntrySourceMap>({});
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditReport, setAuditReport] = useState<GoalAuditReport | null>(null);
+  const [auditError, setAuditError] = useState('');
   const [guideOpen, setGuideOpen] = useState(false);
   const [wallets, setWallets] = useState<WalletRecord[]>([]);
   const [walletLinks, setWalletLinks] = useState<Record<number, number>>({});
@@ -167,6 +176,7 @@ export default function GoalsScreen() {
     setDialog(null);
     setHistoryId(null);
     setHistory([]);
+    setEntrySources({});
     setError('');
     setLoading(true);
     // Wallet metadata is loaded independently, so target cards remain usable
@@ -207,15 +217,22 @@ export default function GoalsScreen() {
     if (historyId === id) {
       setHistoryId(null);
       setHistory([]);
+      setEntrySources({});
       setHistoryLoading(false);
       return;
     }
     setHistoryId(id);
     setHistory([]);
+    setEntrySources({});
     setHistoryLoading(true);
     try {
-      const entries = await getGoalEntries(db, id);
-      if (request === historyRequest.current) setHistory(entries);
+      const [entries, sources] = await Promise.all([
+        getGoalEntries(db, id), getGoalEntrySourceMap(db, id),
+      ]);
+      if (request === historyRequest.current) {
+        setHistory(entries);
+        setEntrySources(sources);
+      }
     } catch (err) {
       if (request === historyRequest.current) {
         setNotice(err instanceof Error ? err.message : 'Riwayat gagal dimuat.');
@@ -223,6 +240,20 @@ export default function GoalsScreen() {
       }
     } finally {
       if (request === historyRequest.current) setHistoryLoading(false);
+    }
+  }
+
+  async function runAudit() {
+    setAuditOpen(true);
+    setAuditLoading(true);
+    setAuditReport(null);
+    setAuditError('');
+    try {
+      setAuditReport(await auditSavingsGoals(db));
+    } catch (err) {
+      setAuditError(err instanceof Error ? err.message : 'Pemeriksaan catatan gagal.');
+    } finally {
+      setAuditLoading(false);
     }
   }
 
@@ -491,7 +522,9 @@ export default function GoalsScreen() {
                       <MaterialCommunityIcons name={entry.kind === 'deposit' ? 'arrow-down-left' : 'arrow-up-right'} size={20} color={entry.kind === 'deposit' ? theme.colors.primary : theme.colors.error} />
                       <View style={{ flex: 1 }}>
                         <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }} numberOfLines={2}>{entry.note || (entry.kind === 'deposit' ? 'Setoran' : 'Pengurangan')}</Text>
-                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>{displayDate(entry.occurred_on)}</Text>
+                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                          {displayDate(entry.occurred_on)} · {entrySources[entry.id] === 'rekening' ? 'Melalui rekening' : 'Catatan manual'}
+                        </Text>
                       </View>
                       <Text style={{ color: entry.kind === 'deposit' ? theme.colors.primary : theme.colors.error, fontWeight: '700', flexShrink: 1 }}>
                         {entry.kind === 'deposit' ? '+' : '−'}{rupiah(entry.amount_rupiah)}
@@ -510,6 +543,9 @@ export default function GoalsScreen() {
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20 }}>
               Setor dan Ambil dapat langsung memindahkan uang jika target terhubung ke rekening. Tanpa rekening, keduanya hanya mencatat progres target.
             </Text>
+            <Pressable accessibilityRole="button" onPress={() => { void runAudit(); }} style={{ paddingVertical: 10, alignSelf: 'flex-start' }}>
+              <Text style={{ color: theme.colors.primary, fontWeight: '700' }}>Periksa Catatan Target</Text>
+            </Pressable>
             <Pressable accessibilityRole="button" onPress={() => setGuideOpen(open => !open)} style={{ paddingVertical: 9, alignSelf: 'flex-start' }}>
               <Text style={{ color: theme.colors.primary, fontWeight: '700' }}>{guideOpen ? 'Tutup panduan' : 'Cara menggunakan'}</Text>
             </Pressable>
@@ -525,6 +561,86 @@ export default function GoalsScreen() {
           </View>
         )}
       </ScrollView>
+
+      <Modal
+        visible={auditOpen}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setAuditOpen(false)}
+      >
+        <View style={styles.modalRoot}>
+          <Pressable
+            style={[StyleSheet.absoluteFill, styles.backdrop]}
+            accessibilityRole="button"
+            accessibilityLabel="Tutup pemeriksaan"
+            onPress={() => setAuditOpen(false)}
+          />
+          <View style={[styles.sheet, { backgroundColor: theme.colors.surface, maxHeight: viewportHeight * 0.84 }]}>
+            <View style={styles.sheetHeading}>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text variant="titleLarge" style={[styles.bold, { color: theme.colors.onSurface }]}>Pemeriksaan Catatan</Text>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Meninjau konsistensi catatan Target Tabungan.</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={() => setAuditOpen(false)} style={styles.sheetClose}>
+                <MaterialCommunityIcons name="close" size={24} color={theme.colors.onSurface} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ paddingBottom: 16, gap: 12 }}>
+              {auditLoading && <View style={styles.loading}><ActivityIndicator color={theme.colors.primary} /><Text style={{ color: theme.colors.onSurfaceVariant }}>Memeriksa catatan...</Text></View>}
+              {!!auditError && <Text style={{ color: theme.colors.error }}>{auditError}</Text>}
+              {auditReport && (
+                <>
+                  <View style={[styles.auditHighlight, { backgroundColor: auditReport.problems.length ? theme.colors.errorContainer : theme.colors.primaryContainer }]}>
+                    <MaterialCommunityIcons
+                      name={auditReport.problems.length ? 'alert-circle-outline' : 'check-circle-outline'}
+                      size={27}
+                      color={auditReport.problems.length ? theme.colors.onErrorContainer : theme.colors.onPrimaryContainer}
+                    />
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text variant="titleMedium" style={{ fontWeight: '800', color: auditReport.problems.length ? theme.colors.onErrorContainer : theme.colors.onPrimaryContainer }}>
+                        {auditReport.problems.length ? `${auditReport.problems.length} catatan perlu diperiksa` : 'Catatan Target konsisten'}
+                      </Text>
+                      <Text variant="bodySmall" style={{ color: auditReport.problems.length ? theme.colors.onErrorContainer : theme.colors.onPrimaryContainer }}>
+                        {auditReport.goalCount} target · {auditReport.entryCount} aktivitas
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={[styles.auditStats, { borderColor: theme.colors.outlineVariant }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Lewat rekening</Text>
+                      <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '800' }}>
+                        {auditReport.linkedDeposits + auditReport.linkedWithdrawals}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Catatan manual</Text>
+                      <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '800' }}>
+                        {auditReport.manualEntries}
+                      </Text>
+                    </View>
+                  </View>
+                  {auditReport.problems.map((problem, index) => (
+                    <View key={`${problem.code}-${index}`} style={[styles.auditProblem, { borderColor: theme.colors.error }]}>
+                      <MaterialCommunityIcons name="alert-outline" size={20} color={theme.colors.error} />
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <Text variant="titleSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>{problem.goalName}</Text>
+                        <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}>{problem.description}</Text>
+                      </View>
+                    </View>
+                  ))}
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20 }}>
+                    Pemeriksaan ini hanya membandingkan riwayat Target dan catatan penghubung.
+                    Transaksi di menu Keuangan belum dapat diverifikasi karena belum memiliki ID referensi bersama.
+                    Tidak ada saldo atau riwayat yang diubah.
+                  </Text>
+                </>
+              )}
+              <Action title="Periksa Ulang" icon="refresh" variant="outline" disabled={auditLoading} onPress={() => { void runAudit(); }} />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={dialog !== null}
@@ -719,6 +835,9 @@ const styles = StyleSheet.create({
   walletOption: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 12, minHeight: 64 },
   historySection: { borderTopWidth: 1, marginTop: 16, paddingTop: 16 },
   historyItem: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 13 },
+  auditHighlight: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderRadius: 14 },
+  auditStats: { flexDirection: 'row', borderWidth: 1, borderRadius: 12, padding: 14 },
+  auditProblem: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderWidth: 1, borderRadius: 12, padding: 12 },
   help: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 8, paddingHorizontal: 5 },
   guide: { borderRadius: 14, padding: 16, marginTop: 8 },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },

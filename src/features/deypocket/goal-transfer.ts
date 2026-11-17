@@ -166,7 +166,6 @@ export async function transferToSavingsGoal(
     // IMPORTANT: reuse DeyPocket's existing finance business logic.
     // Its optional nested transaction wrappers are flattened by atomicDb.
     const transferDraft = {
-      kind: 'transfer' as const,
       fromAccountId: input.fromWalletId,
       toAccountId: link.wallet_id,
       amountRupiah: input.amountRupiah,
@@ -305,7 +304,6 @@ export async function withdrawFromSavingsGoal(
     }
 
     await createTransfer(atomicDb, {
-      kind: 'transfer',
       fromAccountId: linked.wallet_id,
       toAccountId: input.toWalletId,
       amountRupiah: input.amountRupiah,
