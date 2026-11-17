@@ -9,11 +9,15 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Text, useTheme } from 'react-native-paper';
 
 import { formatRupiah } from '../../features/deypocket/format';
+import { getWallets, type WalletRecord } from '../../features/deypocket/finance-management';
+import { getGoalWalletLinks, setGoalWalletLink } from '../../features/deypocket/goal-wallet-repository';
+import { calculateGoalPlan } from '../../features/deypocket/goal-planner';
 import {
   deleteSavingsGoal,
   getGoalEntries,
@@ -24,7 +28,7 @@ import {
 } from '../../features/deypocket/goals-repository';
 
 type Filter = 'active' | 'archived';
-type DialogAction = 'actions' | 'archive' | 'restore' | 'delete';
+type DialogAction = 'actions' | 'archive' | 'restore' | 'delete' | 'wallet';
 type DialogState = { goal: SavingsGoal; action: DialogAction };
 type IconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -94,6 +98,7 @@ function Action({
 export default function GoalsScreen() {
   const db = useSQLiteContext();
   const theme = useTheme();
+  const { height: viewportHeight } = useWindowDimensions();
 
   const [filter, setFilter] = useState<Filter>('active');
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
@@ -106,13 +111,55 @@ export default function GoalsScreen() {
   const [history, setHistory] = useState<GoalEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [wallets, setWallets] = useState<WalletRecord[]>([]);
+  const [walletLinks, setWalletLinks] = useState<Record<number, number>>({});
+  const [walletError, setWalletError] = useState('');
 
   const historyRequest = useRef(0);
   const lock = useRef(false);
 
   const reload = useCallback(async (nextFilter: Filter) => {
     setGoals(await getSavingsGoals(db, nextFilter === 'archived'));
+    // Membership is only metadata. Failure here must not block Goals.
+    try {
+      setWalletLinks(await getGoalWalletLinks(db));
+    } catch (err) {
+      setWalletError(err instanceof Error ? err.message : 'Rekening terkait belum dapat dimuat.');
+    }
   }, [db]);
+
+  const reloadWallets = useCallback(async () => {
+    try {
+      const [walletRows, links] = await Promise.all([
+        getWallets(db), getGoalWalletLinks(db),
+      ]);
+      setWallets(walletRows);
+      setWalletLinks(links);
+      setWalletError('');
+    } catch (err) {
+      setWalletError(err instanceof Error ? err.message : 'Rekening terkait belum dapat dimuat.');
+    }
+  }, [db]);
+
+  async function chooseWallet(goalId: number, walletId: number | null) {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    setWalletError('');
+    try {
+      await setGoalWalletLink(db, goalId, walletId);
+      await reloadWallets();
+      setDialog(null);
+      setNotice(walletId === null
+        ? 'Kaitan rekening berhasil dilepas. Catatan target tetap aman.'
+        : 'Rekening berhasil dihubungkan ke target.');
+    } catch (err) {
+      setWalletError(err instanceof Error ? err.message : 'Gagal menghubungkan rekening.');
+    } finally {
+      lock.current = false;
+      setBusy(false);
+    }
+  }
 
   useFocusEffect(useCallback(() => {
     let active = true;
@@ -122,6 +169,19 @@ export default function GoalsScreen() {
     setHistory([]);
     setError('');
     setLoading(true);
+    // Wallet metadata is loaded independently, so target cards remain usable
+    // if the optional wallet feature cannot be initialized.
+    void Promise.all([getWallets(db), getGoalWalletLinks(db)])
+      .then(([walletRows, links]) => {
+        if (!active) return;
+        setWallets(walletRows);
+        setWalletLinks(links);
+        setWalletError('');
+      })
+      .catch(err => {
+        if (active) setWalletError(err instanceof Error ? err.message : 'Rekening terkait belum dapat dimuat.');
+      });
+
     void getSavingsGoals(db, filter === 'archived')
       .then(rows => { if (active) setGoals(rows); })
       .catch(err => {
@@ -131,7 +191,7 @@ export default function GoalsScreen() {
     return () => { active = false; ++historyRequest.current; };
   }, [db, filter]));
 
-  function openManage(mode: 'create' | 'edit' | 'deposit' | 'withdrawal', id?: number) {
+  function openManage(mode: 'create' | 'edit' | 'deposit' | 'withdrawal' | 'transfer', id?: number) {
     if (lock.current) return;
     setDialog(null);
     if (id === undefined) {
@@ -299,6 +359,12 @@ export default function GoalsScreen() {
           const remaining = Math.max(0, goal.target_rupiah - goal.saved_rupiah);
           const historyOpen = historyId === goal.id;
           const barWidth = `${Math.round(progress(goal.saved_rupiah, goal.target_rupiah) * 100)}%` as `${number}%`;
+          const relatedWallet = wallets.find(item => item.id === walletLinks[goal.id]);
+          const monthlyPlan = calculateGoalPlan({
+            saved: goal.saved_rupiah,
+            target: goal.target_rupiah,
+            targetDate: goal.target_date,
+          });
           return (
             <View key={goal.id} style={[styles.goalCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}>
               <View style={styles.cardHeader}>
@@ -352,6 +418,46 @@ export default function GoalsScreen() {
                 <Text variant="bodySmall" numberOfLines={3} style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19, marginTop: 13 }}>{goal.note}</Text>
               )}
 
+              {!archived && monthlyPlan.status === 'active' && (
+                <View style={[styles.planRow, { borderColor: theme.colors.outlineVariant }]}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Rencana menabung per bulan</Text>
+                    <Text variant="titleSmall" style={{ fontWeight: '800', color: theme.colors.onSurface }}>
+                      {rupiah(monthlyPlan.monthlyAmount)}
+                    </Text>
+                  </View>
+                  <Text variant="labelSmall" style={{ color: theme.colors.primary, textAlign: 'right' }}>
+                    {monthlyPlan.monthsRemaining} bulan tersisa
+                  </Text>
+                </View>
+              )}
+              {!archived && monthlyPlan.status === 'overdue' && (
+                <View style={[styles.planRow, { borderColor: theme.colors.error }]}>
+                  <MaterialCommunityIcons name="calendar-alert" size={20} color={theme.colors.error} />
+                  <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.error }}>
+                    Tenggat terlewati. Ubah tanggal target agar rencana bulanan dihitung ulang.
+                  </Text>
+                </View>
+              )}
+
+              {relatedWallet && (
+                <View style={[styles.walletRow, { backgroundColor: theme.colors.surfaceVariant }]}>
+                  <MaterialCommunityIcons name="bank-outline" size={20} color={theme.colors.primary} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Rekening terkait</Text>
+                    <Text variant="bodyMedium" style={{ fontWeight: '700', color: theme.colors.onSurface }} numberOfLines={1}>
+                      {relatedWallet.name}
+                    </Text>
+                  </View>
+                  <View style={{ maxWidth: '44%', alignItems: 'flex-end' }}>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>Saldo rekening</Text>
+                    <Text variant="bodySmall" numberOfLines={1} style={{ fontWeight: '700', color: theme.colors.onSurface }}>
+                      {formatRupiah(relatedWallet.balance_rupiah)}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
               <View style={styles.buttonsRow}>
                 {archived ? (
                   <Action title="Aktifkan" icon="restore" variant="primary" flex={1} disabled={busy} onPress={() => setDialog({ goal, action: 'restore' })} />
@@ -396,7 +502,7 @@ export default function GoalsScreen() {
           <MaterialCommunityIcons name="information-outline" size={20} color={theme.colors.onSurfaceVariant} />
           <View style={{ flex: 1 }}>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20 }}>
-              Fitur Target mencatat progres tabungan, tetapi tidak otomatis mengubah saldo rekening.
+              Rekening terkait hanya menampilkan saldo aktual. Catatan Setor tetap terpisah dari transaksi transfer agar saldo tidak terhitung dua kali.
             </Text>
             <Pressable accessibilityRole="button" onPress={() => setGuideOpen(open => !open)} style={{ paddingVertical: 9, alignSelf: 'flex-start' }}>
               <Text style={{ color: theme.colors.primary, fontWeight: '700' }}>{guideOpen ? 'Tutup panduan' : 'Cara menggunakan'}</Text>
@@ -407,7 +513,9 @@ export default function GoalsScreen() {
           <View style={[styles.guide, { backgroundColor: theme.colors.surfaceVariant }]}>
             <Text style={{ color: theme.colors.onSurface }}>1. Buat target dan tentukan nominal.</Text>
             <Text style={{ color: theme.colors.onSurface }}>2. Tekan Setor ketika menyisihkan uang.</Text>
-            <Text style={{ color: theme.colors.onSurface }}>3. Pantau progres dan cek Riwayat.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>3. Hubungkan satu rekening khusus lewat menu tiga titik (opsional).</Text>
+            <Text style={{ color: theme.colors.onSurface }}>4. Untuk memindahkan uang, gunakan menu Transaksi → Transfer; kemudian catat Setor pada target.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>5. Jika ada tenggat, DeyPocket menghitung saran nominal tabungan per bulan.</Text>
           </View>
         )}
       </ScrollView>
@@ -441,6 +549,10 @@ export default function GoalsScreen() {
                 {!currentDialogGoal.archived_at ? (
                   <>
                     <Action title="Edit Target" icon="pencil-outline" onPress={() => openManage('edit', currentDialogGoal.id)} />
+                    <Action title="Hubungkan Rekening" icon="bank-outline" onPress={() => { setWalletError(''); setDialog({ goal: currentDialogGoal, action: 'wallet' }); }} />
+                    {walletLinks[currentDialogGoal.id] !== undefined && (
+                      <Action title="Transfer & Setor" icon="swap-horizontal" onPress={() => openManage('transfer', currentDialogGoal.id)} />
+                    )}
                     {currentDialogGoal.saved_rupiah > 0 && (
                       <Action title="Kurangi Tabungan" icon="minus-circle-outline" onPress={() => openManage('withdrawal', currentDialogGoal.id)} />
                     )}
@@ -459,7 +571,78 @@ export default function GoalsScreen() {
               </>
             )}
 
-            {currentDialogGoal && currentDialogAction && currentDialogAction !== 'actions' && (
+            {currentDialogGoal && currentDialogAction === 'wallet' && (
+              <ScrollView
+                style={{ maxHeight: Math.max(260, viewportHeight * 0.76) }}
+                contentContainerStyle={{ gap: 10, paddingBottom: 6 }}
+                keyboardShouldPersistTaps="always"
+                showsVerticalScrollIndicator={false}
+              >
+                <View style={styles.sheetHeading}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text variant="titleMedium" style={[styles.bold, { color: theme.colors.onSurface }]}>Rekening untuk Target</Text>
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }} numberOfLines={2}>
+                      {currentDialogGoal.title}
+                    </Text>
+                  </View>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={() => setDialog(null)} disabled={busy} style={styles.sheetClose}>
+                    <MaterialCommunityIcons name="close" size={24} color={theme.colors.onSurface} />
+                  </Pressable>
+                </View>
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20, marginBottom: 12 }}>
+                  Pilih satu rekening khusus untuk memantau saldo aktual. Menghubungkan rekening tidak memindahkan uang dan tidak mengubah setoran yang sudah tercatat.
+                </Text>
+                {!!walletError && (
+                  <Text variant="bodySmall" style={{ color: theme.colors.error, marginBottom: 10 }}>{walletError}</Text>
+                )}
+                <View style={{ gap: 8 }}>
+                  {wallets.length === 0 && (
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, paddingVertical: 12 }}>
+                      Belum ada rekening. Tambahkan terlebih dahulu melalui Dompet & Rekening.
+                    </Text>
+                  )}
+                  {wallets.map(wallet => {
+                    const selected = walletLinks[currentDialogGoal.id] === wallet.id;
+                    const used = Object.entries(walletLinks).some(([linkedGoalId, id]) => Number(linkedGoalId) !== currentDialogGoal.id && id === wallet.id);
+                    return (
+                      <Pressable
+                        key={wallet.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Pilih rekening ${wallet.name}`}
+                        accessibilityState={{ disabled: busy || used, selected }}
+                        disabled={busy || used}
+                        onPress={() => { void chooseWallet(currentDialogGoal.id, wallet.id); }}
+                        style={({ pressed }) => [
+                          styles.walletOption,
+                          { borderColor: selected ? theme.colors.primary : theme.colors.outlineVariant, backgroundColor: selected ? theme.colors.primaryContainer : theme.colors.surface },
+                          pressed && { opacity: 0.7 },
+                          used && { opacity: 0.45 },
+                        ]}
+                      >
+                        <MaterialCommunityIcons name="bank-outline" size={22} color={theme.colors.primary} />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text variant="bodyMedium" numberOfLines={1} style={{ fontWeight: '700', color: theme.colors.onSurface }}>{wallet.name}</Text>
+                          <Text variant="bodySmall" numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant }}>
+                            {used ? 'Dipakai target lain' : formatRupiah(wallet.balance_rupiah)}
+                          </Text>
+                        </View>
+                        {selected && <MaterialCommunityIcons name="check-circle" size={22} color={theme.colors.primary} />}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {walletLinks[currentDialogGoal.id] !== undefined && (
+                  <Action title="Lepas Kaitan Rekening" icon="link-off" variant="outline" disabled={busy}
+                    onPress={() => { void chooseWallet(currentDialogGoal.id, null); }} />
+                )}
+                <Action title="Buka Transaksi untuk Transfer" icon="swap-horizontal" variant="subtle" disabled={busy}
+                  onPress={() => { setDialog(null); router.push('/transactions'); }} />
+                <Action title="Kelola Dompet & Rekening" icon="wallet-outline" disabled={busy}
+                  onPress={() => { setDialog(null); router.push('/accounts'); }} />
+              </ScrollView>
+            )}
+
+            {currentDialogGoal && currentDialogAction && currentDialogAction !== 'actions' && currentDialogAction !== 'wallet' && (
               <>
                 <View style={styles.confirmIcon}>
                   <MaterialCommunityIcons
@@ -532,6 +715,9 @@ const styles = StyleSheet.create({
   amountsCol: { flex: 1, minWidth: 0 },
   amountsValue: { fontSize: 14, lineHeight: 21, fontWeight: '700', marginTop: 3, includeFontPadding: false },
   buttonsRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  planRow: { borderWidth: 1, borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 13 },
+  walletRow: { borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 12 },
+  walletOption: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 12, minHeight: 64 },
   historySection: { borderTopWidth: 1, marginTop: 16, paddingTop: 16 },
   historyItem: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 13 },
   help: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 8, paddingHorizontal: 5 },
