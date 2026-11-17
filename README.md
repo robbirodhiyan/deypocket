@@ -1,85 +1,40 @@
-# DeyPocket — Sprint 9: Transfer & Setor Target (Atomic)
+# DeyPocket — Sprint 9.1 Unified Goals (Ready Paste)
 
-**ZIP siap paste, tanpa installer, tanpa dependency baru.** Dibangun dari source Sprint 8 (Goals + rekening target + planner) serta form Manage dari perbaikan Sprint 7 terakhir.
+Menggunakan source Sprint 9 sebagai dasar. Tidak ada installer.
 
-## Fitur
+## Yang berubah
 
-- Target yang telah dihubungkan ke rekening melalui **⋮ → Hubungkan Rekening** sekarang memiliki pilihan **⋮ → Transfer & Setor**.
-- Pilih rekening asal (saldo tersedia), nominal, tanggal, dan keterangan; rekening tujuan diambil otomatis dari rekening terkait Target.
-- Transfer dilakukan menggunakan fungsi transaksi DeyPocket yang sudah ada: `createTransfer()` dari `finance-repository.ts`.
-- Dalam **satu transaksi SQLite eksklusif**, dibuat (1) transfer rekening, (2) setoran di `dp_goal_entries`, dan (3) jejak audit `dp_goal_transfer_records`. Jika ada tahap gagal, seluruh operasi di-**rollback**.
-- Ada konfirmasi sebelum transfer, pemeriksaan saldo asal, larangan rekening asal = rekening tujuan, pencegahan simpan ganda selama form aktif, dan identitas operasi yang unik.
-- Fitur Setor manual, Kurangi, Edit, Arsip, Hapus Permanen, Riwayat, dan planner tetap ada.
-- **Tidak ada perubahan tabel finance**. `dp_goal_transfer_records` adalah tabel baru yang hanya menyimpan referensi pencatatan target dan metadata rekening/nominal; tidak menyimpan informasi rahasia.
-- Tidak ada route baru: masih menggunakan `/goals/manage?mode=transfer`.
+- Kartu Target: **Setor**, **Ambil**, **Lihat Riwayat**. Tidak ada menu terpisah “Transfer & Setor” atau “Kurangi Tabungan”.
+- **Jika rekening target terhubung**: Setor = transfer masuk + catatan deposit, Ambil = transfer keluar + catatan withdrawal. Keduanya memakai `withExclusiveTransactionAsync` (Android/iOS) dengan validasi saldo serta penguncian duplikasi operasi.
+- **Jika tidak terhubung**: tombol tetap mencatat setoran/pengurangan virtual dan **tidak mengubah saldo** rekening. Teks pada form menerangkan perbedaannya.
+- Riwayat lama tidak dihapus. Pengurangan dibatasi oleh saldo target tercatat; pengambilan dari rekening juga memeriksa saldo rekening asal.
+- Menu tiga titik hanya untuk edit, kaitan rekening, arsip, dan hapus permanen sesuai aturan Sprint 7.
+- Link rekening bersifat satu-target-satu-rekening berdasarkan tabel Sprint 8; rekening yang belum memiliki transaksi target tidak otomatis disinkronkan dari saldo historis.
 
-## Struktur ZIP
+## Pasang
 
-```text
-src/
-├── app/goals/
-│   ├── index.tsx                    REPLACE (dari Sprint 8)
-│   └── manage.tsx                   REPLACE (dari Sprint 7)
-└── features/deypocket/
-    └── goal-transfer.ts            NEW
-README.md
+1. Ekstrak ZIP di luar folder proyek.
+2. Cadangkan file lama, lalu copy folder `src` ke root proyek DeyPocket.
+3. Ganti tiga file:
+   - `src/app/goals/index.tsx`
+   - `src/app/goals/manage.tsx`
+   - `src/features/deypocket/goal-transfer.ts`
+4. Dependensi Sprint 7, 8 dan `finance-repository.ts` asli harus tetap tersedia.
+
 ```
-
-**Pastikan file dari Sprint 7 dan 8 masih ada:**
-
-- `src/features/deypocket/goals-repository.ts`
-- `src/features/deypocket/goal-wallet-repository.ts`
-- `src/features/deypocket/goal-planner.ts`
-- `src/features/deypocket/finance-repository.ts` (punya fungsi `createTransfer`)
-- `src/features/deypocket/finance-management.ts` (punya `getWallets`)
-
-## Pemasangan tanpa installer
-
-1. Cadangkan source yang akan di-replace, terutama `src/app/goals/index.tsx` dan `manage.tsx`.
-2. Ekstrak ZIP di **luar** folder proyek.
-3. Salin folder `src` ke root proyek DeyPocket yang berisi `package.json`; pilih **Replace** jika diminta.
-4. Validasi dari CMD:
-
-```cmd
 cd /d C:\laragon\project\deypocket
 npm run validate
 npx tsc --noEmit
 npx expo start --clear
 ```
 
-**Jangan langsung publish OTA sebelum validasi dan tes APK.** Source `finance-repository.ts` yang asli tidak termasuk paket-paket yang tersedia di sesi ini. Sprint 9 mengintegrasikan `createTransfer(db, draft)` berdasarkan signature yang telah digunakan di halaman Transaksi, tetapi masih perlu tes terhadap kode finance asli di proyek pengguna.
+## Uji wajib sebelum OTA
 
-## Cara pakai
+- Target tanpa rekening: Setor/Ambil mengubah progres dan riwayat tetapi **tidak** mengubah saldo.
+- Target dengan rekening: Setor dari akun A -> rekening target B, saldo A turun, saldo B naik, progres bertambah satu kali.
+- Ambil dari B -> A: saldo B turun, saldo A naik, progres turun, riwayat pengambilan tercatat.
+- Saldo tujuan/asal dan histori dengan gagal-query harus rollback. Tombol simpan tidak boleh menimbulkan transaksi ganda.
+- Uji rekening asal saldo tidak cukup, target saldo tidak cukup, rekening sama, target arsip, dan web unsupported.
+- Transfer langsung melalui menu Transaksi *tidak* otomatis menambah/mengurangi progres Target; gunakan tombol Setor/Ambil di kartu.
 
-1. Buat/aktifkan target.
-2. Di kartu Target, tekan **⋮ → Hubungkan Rekening**; pilih rekening tujuan khusus menabung.
-3. Tekan **⋮ → Transfer & Setor**.
-4. Pilih rekening asal berbeda, isi nominal (saldo harus cukup), tanggal, dan keterangan.
-5. Tekan **Transfer & Catat Setoran**, tinjau ringkasan konfirmasi, lalu pilih **Transfer**.
-6. Setelah kembali ke halaman Goals, cek **progres target**, **saldo rekening terkait**, dan **Riwayat**.
-7. Periksa juga menu Transaksi untuk memastikan transfer tercatat tepat satu kali.
-
-Perbedaan dari tombol **Setor** biasa: tombol Setor hanya menambahkan catatan target virtual. **Transfer & Setor** menambah catatan target **dan** membuat transfer rekening sungguhan di aplikasi.
-
-## Batasan keamanan dan akuntansi
-
-- **Hanya Android/iOS.** `withExclusiveTransactionAsync` Expo SQLite tidak didukung di web. Tombol simpan mode terintegrasi dinonaktifkan pada web; gunakan APK untuk tes.
-- Karena `createTransfer()` yang asli belum dapat diperiksa di sesi ini, pengujian rollback dilakukan menggunakan adapter finance simulasi, bukan terhadap skema keuangan aktual. Jangan pakai transaksi riil hingga uji end-to-end pada APK berhasil.
-- **Jangan mengedit/menghapus transaksi transfer yang terkait Target secara terpisah** sebelum fitur sinkronisasi balik transfer↔setoran ditambahkan. Sprint ini hanya menjamin dua perubahan atomik **saat dibuat**, belum menjaga perubahan setelah transaksi diedit/dihapus dari layar Transaksi.
-- Rekening yang ditautkan tidak otomatis didedikasikan secara eksklusif pada level database transaksi. Pengeluaran/transfer lain pada rekening target tetap mungkin dan akan memengaruhi saldo rekening, tetapi tidak otomatis mengubah catatan progres Goal.
-- Jangan membuat setoran virtual sekali lagi setelah menjalankan Transfer & Setor; itu akan menggandakan progres target.
-- Jangan hapus data aplikasi untuk troubleshooting, karena transaksi dan target tersimpan pada SQLite lokal.
-
-## Pengujian yang sudah dilakukan
-
-- Sintaks TypeScript/TSX ketiga file: lolos transpile pemeriksaan sintaks.
-- SQLite simulasi: 9 kasus PASS: commit transfer dan setoran bersama, key duplikat ditolak, saldo asal tidak cukup, asal = tujuan ditolak, target arsip ditolak, rekening target belum ada, dua jenis kegagalan finance rollback, dan kegagalan setoran rollback transaksi finance.
-- **Belum** menjalankan `npm run validate` terhadap keseluruhan proyek pengguna, belum menguji Android nyata, dan belum memeriksa implementasi asli `finance-repository.ts`.
-
-## OTA (setelah tes APK berhasil)
-
-```cmd
-npx eas-cli@latest update --channel preview --environment preview --platform android --message "feat: atomic wallet transfer with savings goal deposit"
-```
-
-Tidak ada native dependency baru. Namun perubahan ini menyentuh transaksi keuangan; prioritas utama adalah validasi dan pengujian aman dengan data uji.
+**Peringatan:** `createTransfer()` asli dari `finance-repository.ts` belum tersedia dalam paket input untuk diuji end-to-end. Fitur ini menyimpan transaksi keuangan; **jangan publikasi OTA** sampai `npm run validate` dan uji Android nyata dengan data uji dan rollback berhasil. Repo ini mereuse fungsi transfer yang sudah dipakai Sprint 9.

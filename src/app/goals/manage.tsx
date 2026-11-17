@@ -17,7 +17,7 @@ import { Button, Dialog, Portal, Text, TextInput, useTheme } from 'react-native-
 import { formatRupiah } from '../../features/deypocket/format';
 import { getWallets, type WalletRecord } from '../../features/deypocket/finance-management';
 import { getGoalWalletLinks } from '../../features/deypocket/goal-wallet-repository';
-import { newGoalTransferOperationId, transferToSavingsGoal } from '../../features/deypocket/goal-transfer';
+import { newGoalTransferOperationId, transferToSavingsGoal, withdrawFromSavingsGoal } from '../../features/deypocket/goal-transfer';
 import {
   addGoalEntry,
   getSavingsGoal,
@@ -75,8 +75,10 @@ export default function ManageGoalScreen() {
     ? params.mode : 'create';
   const id = Number(params.goalId);
   const editing = mode === 'edit';
-  const isTransfer = mode === 'transfer';
-  const isEntry = mode === 'deposit' || mode === 'withdrawal' || isTransfer;
+  // Legacy /goals/manage?mode=transfer now behaves exactly like Setor.
+  // The user no longer has to select a separate transfer action.
+  const isEntry = mode === 'deposit' || mode === 'withdrawal' || mode === 'transfer';
+  const isWithdrawal = mode === 'withdrawal';
   const needsGoal = editing || isEntry;
   const entryKind: GoalEntryKind = mode === 'withdrawal' ? 'withdrawal' : 'deposit';
 
@@ -113,7 +115,7 @@ export default function ManageGoalScreen() {
         const row = await getSavingsGoal(db, id);
         if (!active) return;
         if (!row || row.archived_at) throw new Error('Target tidak ditemukan atau telah diarsipkan.');
-        if (isTransfer) {
+        if (isEntry) {
           const [available, links] = await Promise.all([
             getWallets(db), getGoalWalletLinks(db),
           ]);
@@ -121,9 +123,10 @@ export default function ManageGoalScreen() {
           const linked = links[id] ?? null;
           setWallets(available);
           setTargetWalletId(linked);
-          if (linked === null) throw new Error('Hubungkan rekening target melalui menu tiga titik terlebih dahulu.');
-          const firstSource = available.find(item => item.id !== linked && item.balance_rupiah > 0);
-          setSourceWalletId(firstSource?.id ?? null);
+          const firstCounterpart = available.find(item =>
+            item.id !== linked && (isWithdrawal || item.balance_rupiah > 0)
+          );
+          setSourceWalletId(firstCounterpart?.id ?? null);
         }
         if (!active) return;
         setGoal(row);
@@ -141,7 +144,7 @@ export default function ManageGoalScreen() {
       .catch(err => { if (active) setError(err instanceof Error ? err.message : 'Target tidak dapat dimuat.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [db, id, needsGoal, editing, isTransfer]);
+  }, [db, id, needsGoal, editing, isEntry, isWithdrawal]);
 
   function goBack() {
     Keyboard.dismiss();
@@ -158,20 +161,25 @@ export default function ManageGoalScreen() {
   const validEntryDate = validDate(occurredOn.trim());
   const balance = goal?.saved_rupiah ?? 0;
   const enoughBalance = entryKind !== 'withdrawal' || entryValue <= balance;
+  const linkedTransfer = isEntry && targetWalletId !== null;
+  // 'sourceWalletId' is the other account: source for Setor, destination for Ambil.
   const selectedSource = wallets.find(item => item.id === sourceWalletId);
   const selectedDestination = wallets.find(item => item.id === targetWalletId);
-  const canTransfer = !isTransfer || (
+  const availableOriginBalance = isWithdrawal
+    ? (selectedDestination?.balance_rupiah ?? 0)
+    : (selectedSource?.balance_rupiah ?? 0);
+  const canTransfer = !linkedTransfer || (
     sourceWalletId !== null && targetWalletId !== null &&
     sourceWalletId !== targetWalletId &&
     selectedSource !== undefined && selectedDestination !== undefined &&
-    selectedSource.balance_rupiah >= entryValue && Platform.OS !== 'web'
+    availableOriginBalance >= entryValue && Platform.OS !== 'web'
   );
   const canSave = !loading && !saving && (!needsGoal || goal !== null) && (
     isEntry ? validEntryValue && validEntryDate && enoughBalance && canTransfer : validTitle && validTarget && validGoalDate
   );
   const nextSaved = Math.max(0, balance + (entryKind === 'deposit' ? entryValue : -entryValue));
-  const screenTitle = mode === 'create' ? 'Buat Target' : mode === 'edit' ? 'Edit Target' : mode === 'transfer' ? 'Transfer & Setor' : mode === 'deposit' ? 'Catat Setoran' : 'Kurangi Tabungan';
-  const submitTitle = mode === 'create' ? 'Buat Target' : mode === 'edit' ? 'Simpan Perubahan' : mode === 'transfer' ? 'Transfer & Catat Setoran' : mode === 'deposit' ? 'Simpan Setoran' : 'Simpan Pengurangan';
+  const screenTitle = mode === 'create' ? 'Buat Target' : mode === 'edit' ? 'Edit Target' : isWithdrawal ? 'Ambil Tabungan' : 'Setor Tabungan';
+  const submitTitle = mode === 'create' ? 'Buat Target' : mode === 'edit' ? 'Simpan Perubahan' : isWithdrawal ? 'Simpan Pengambilan' : 'Simpan Setoran';
   const presets = isEntry ? ENTRY_PRESETS : GOAL_PRESETS;
   const rawAmount = isEntry ? amount : target;
   const setRawAmount = isEntry ? setAmount : setTarget;
@@ -183,12 +191,20 @@ export default function ManageGoalScreen() {
     setError('');
     Keyboard.dismiss();
     try {
-      if (isTransfer) {
-        await transferToSavingsGoal(db, {
-          goalId: id, fromWalletId: sourceWalletId!, amountRupiah: entryValue,
-          occurredOn: occurredOn.trim(), note: entryNote.trim(),
-          operationId: operationId.current,
-        });
+      if (linkedTransfer) {
+        if (isWithdrawal) {
+          await withdrawFromSavingsGoal(db, {
+            goalId: id, toWalletId: sourceWalletId!, amountRupiah: entryValue,
+            occurredOn: occurredOn.trim(), note: entryNote.trim(),
+            operationId: operationId.current,
+          });
+        } else {
+          await transferToSavingsGoal(db, {
+            goalId: id, fromWalletId: sourceWalletId!, amountRupiah: entryValue,
+            occurredOn: occurredOn.trim(), note: entryNote.trim(),
+            operationId: operationId.current,
+          });
+        }
       } else if (isEntry) {
         await addGoalEntry(db, id, entryKind, entryValue, occurredOn.trim(), entryNote.trim());
       } else {
@@ -228,7 +244,9 @@ export default function ManageGoalScreen() {
               {isEntry ? goal?.title ?? 'Tabungan Target' : editing ? 'Perbarui Target' : 'Tujuan Baru'}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}>
-              {isTransfer ? 'Pindahkan uang ke rekening target dan catat progres dalam satu langkah.' : isEntry ? 'Catat uang yang disisihkan atau digunakan.' : 'Isi nama dan jumlah uang yang ingin dikumpulkan.'}
+              {linkedTransfer
+                ? (isWithdrawal ? 'Ambil uang dari rekening tabungan dan kurangi progres target.' : 'Pindahkan uang ke rekening tabungan dan tambah progres target.')
+                : isEntry ? 'Catat progres tabungan tanpa memindahkan saldo rekening.' : 'Isi nama dan jumlah uang yang ingin dikumpulkan.'}
             </Text>
           </View>
         </View>
@@ -258,45 +276,51 @@ export default function ManageGoalScreen() {
             )}
 
 
-            {isTransfer && Platform.OS === 'web' && (
+            {linkedTransfer && Platform.OS === 'web' && (
               <View style={[styles.notice, { backgroundColor: theme.colors.errorContainer }]}>
                 <MaterialCommunityIcons name="information-outline" size={20} color={theme.colors.onErrorContainer} />
-                <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.onErrorContainer }}>Transfer terintegrasi harus digunakan dari APK Android. Di web, kamu masih bisa membuat catatan target biasa.</Text>
+                <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.onErrorContainer }}>Pindah uang dari rekening target hanya tersedia pada APK Android/iOS. Buka aplikasi di HP untuk melanjutkan.</Text>
               </View>
             )}
 
-            {isTransfer && (
+            {linkedTransfer && (
               <View style={[styles.section, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}>
-                <Text variant="titleMedium" style={[styles.bold, { color: theme.colors.onSurface }]}>Pilih sumber dana</Text>
+                <Text variant="titleMedium" style={[styles.bold, { color: theme.colors.onSurface }]}>
+                  {isWithdrawal ? 'Kirim uang ke rekening' : 'Ambil dana dari rekening'}
+                </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 5, lineHeight: 19 }}>
-                  Dana akan dipindahkan dari rekening asal ke rekening khusus target.
+                  {isWithdrawal ? 'Uang keluar dari rekening target ke rekening tujuan pilihanmu.' : 'Uang masuk ke rekening khusus target.'}
                 </Text>
                 <View style={[styles.accountDestination, { backgroundColor: theme.colors.primaryContainer }]}>
                   <MaterialCommunityIcons name="bank-outline" size={22} color={theme.colors.primary} />
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text variant="labelSmall" style={{ color: theme.colors.onPrimaryContainer }}>Rekening tujuan</Text>
+                    <Text variant="labelSmall" style={{ color: theme.colors.onPrimaryContainer }}>
+                      {isWithdrawal ? 'Dari rekening tabungan' : 'Ke rekening tabungan'}
+                    </Text>
                     <Text variant="bodyMedium" numberOfLines={2} style={{ fontWeight: '700', color: theme.colors.onPrimaryContainer }}>
                       {selectedDestination?.name ?? 'Rekening tidak tersedia'}
                     </Text>
                   </View>
                 </View>
-                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 15, marginBottom: 8 }}>Rekening asal *</Text>
+                <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 15, marginBottom: 8 }}>
+                  {isWithdrawal ? 'Rekening tujuan *' : 'Rekening asal *'}
+                </Text>
                 {wallets.filter(item => item.id !== targetWalletId).length === 0 && (
-                  <Text variant="bodySmall" style={{ color: theme.colors.error }}>Belum ada rekening asal yang berbeda dari rekening target.</Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.error }}>Tambahkan rekening lain agar uang bisa dipindahkan.</Text>
                 )}
                 {wallets.filter(item => item.id !== targetWalletId).map(item => (
                   <Pressable
                     key={item.id}
                     accessibilityRole="radio"
-                    accessibilityState={{ selected: sourceWalletId === item.id, disabled: saving || item.balance_rupiah <= 0 }}
-                    disabled={saving || item.balance_rupiah <= 0}
+                    accessibilityState={{ selected: sourceWalletId === item.id, disabled: saving || (!isWithdrawal && item.balance_rupiah <= 0) }}
+                    disabled={saving || (!isWithdrawal && item.balance_rupiah <= 0)}
                     onPress={() => setSourceWalletId(item.id)}
                     style={({ pressed }) => [
                       styles.walletOption,
                       { backgroundColor: sourceWalletId === item.id ? theme.colors.primaryContainer : theme.colors.background,
                         borderColor: sourceWalletId === item.id ? theme.colors.primary : theme.colors.outlineVariant },
                       pressed && { opacity: 0.65 },
-                      item.balance_rupiah <= 0 && { opacity: 0.5 },
+                      !isWithdrawal && item.balance_rupiah <= 0 && { opacity: 0.5 },
                     ]}
                   >
                     <MaterialCommunityIcons name={sourceWalletId === item.id ? 'radiobox-marked' : 'radiobox-blank'} size={22} color={theme.colors.primary} />
@@ -306,8 +330,8 @@ export default function ManageGoalScreen() {
                     </View>
                   </Pressable>
                 ))}
-                {selectedSource && entryValue > selectedSource.balance_rupiah && (
-                  <Text variant="bodySmall" style={{ color: theme.colors.error, marginTop: 9 }}>Nominal melebihi saldo rekening asal.</Text>
+                {validEntryValue && entryValue > availableOriginBalance && (
+                  <Text variant="bodySmall" style={{ color: theme.colors.error, marginTop: 9 }}>Saldo rekening asal tidak mencukupi.</Text>
                 )}
               </View>
             )}
@@ -344,7 +368,7 @@ export default function ManageGoalScreen() {
                   accessibilityLabel="Nominal rupiah"
                 />
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {isTransfer ? 'Jumlah ini akan dipindahkan dan dicatat sebagai setoran target.' : isEntry ? 'Ketik nominal atau pilih jumlah cepat.' : 'Jumlah total yang ingin dikumpulkan.'}
+                  {linkedTransfer ? 'Saldo rekening dan progres target dicatat dalam satu proses.' : isEntry ? 'Catatan progres tanpa memindahkan uang dari rekening.' : 'Jumlah total yang ingin dikumpulkan.'}
                 </Text>
                 <View style={styles.presets}>
                   {presets.map(preset => (
@@ -400,7 +424,7 @@ export default function ManageGoalScreen() {
 
               <View style={styles.field}>
                 <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {isEntry ? 'Tanggal setoran (YYYY-MM-DD) *' : 'Tanggal target (YYYY-MM-DD)'}
+                  {isEntry ? 'Tanggal transaksi (YYYY-MM-DD) *' : 'Tanggal target (YYYY-MM-DD)'}
                 </Text>
                 <TextInput
                   mode="outlined" value={isEntry ? occurredOn : dueDate}
@@ -449,7 +473,7 @@ export default function ManageGoalScreen() {
             <Pressable
               accessibilityRole="button"
               disabled={!canSave}
-              onPress={() => { if (isTransfer) setConfirmTransfer(true); else void save(); }}
+              onPress={() => { if (linkedTransfer) setConfirmTransfer(true); else void save(); }}
               style={({ pressed }) => [
                 styles.submit,
                 { backgroundColor: theme.colors.primary },
@@ -462,16 +486,16 @@ export default function ManageGoalScreen() {
 
             {!canSave && !saving && (
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', lineHeight: 19 }}>
-                {isTransfer ? 'Pilih rekening asal dengan saldo cukup, lalu isi nominal dan tanggal yang valid.' : isEntry ? 'Isi nominal dan tanggal yang valid untuk menyimpan.' : 'Lengkapi nama target dan nominal lebih dari Rp0.'}
+                {linkedTransfer ? 'Pilih rekening lain, pastikan saldo sumber cukup, dan isi nominal serta tanggal yang valid.' : isEntry ? 'Isi nominal dan tanggal yang valid untuk menyimpan.' : 'Lengkapi nama target dan nominal lebih dari Rp0.'}
               </Text>
             )}
 
             <View style={styles.info}>
               <MaterialCommunityIcons name="information-outline" size={18} color={theme.colors.onSurfaceVariant} />
               <Text variant="bodySmall" style={{ flex: 1, color: theme.colors.onSurfaceVariant, lineHeight: 19 }}>
-                {isTransfer
-                ? 'Transfer dan setoran target disimpan bersama. Jika gagal, keduanya dibatalkan.'
-                : 'Catatan target tidak otomatis memindahkan uang atau mengubah saldo rekening.'}
+                {linkedTransfer
+                  ? 'Pemindahan dana dan progres target disimpan bersamaan. Jika salah satu gagal, keduanya batal.'
+                  : 'Catatan target ini tidak mengubah saldo rekening.'}
               </Text>
             </View>
           </>
@@ -484,15 +508,15 @@ export default function ManageGoalScreen() {
       </ScrollView>
       <Portal>
         <Dialog visible={confirmTransfer} onDismiss={() => { if (!saving) setConfirmTransfer(false); }}>
-          <Dialog.Title>Konfirmasi transfer</Dialog.Title>
+          <Dialog.Title>{isWithdrawal ? 'Konfirmasi pengambilan' : 'Konfirmasi setoran'}</Dialog.Title>
           <Dialog.Content>
             <Text variant="bodyMedium" style={{ lineHeight: 22 }}>
-              Pindahkan {formatRupiah(entryValue)} dari {selectedSource?.name ?? 'rekening asal'} ke {selectedDestination?.name ?? 'rekening target'} dan tambah progres tabungan? Proses ini hanya dijalankan sekali.
+              {isWithdrawal ? 'Ambil' : 'Setor'} {formatRupiah(entryValue)} dari {isWithdrawal ? selectedDestination?.name ?? 'rekening tabungan' : selectedSource?.name ?? 'rekening asal'} ke {isWithdrawal ? selectedSource?.name ?? 'rekening tujuan' : selectedDestination?.name ?? 'rekening tabungan'}? Saldo dan progres target akan berubah bersamaan.
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button disabled={saving} onPress={() => setConfirmTransfer(false)}>Batal</Button>
-            <Button disabled={saving || !canSave} loading={saving} onPress={() => { setConfirmTransfer(false); void save(); }}>Transfer</Button>
+            <Button disabled={saving || !canSave} loading={saving} onPress={() => { setConfirmTransfer(false); void save(); }}>{isWithdrawal ? 'Ambil' : 'Setor'}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>

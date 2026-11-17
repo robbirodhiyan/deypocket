@@ -462,12 +462,18 @@ export default function GoalsScreen() {
                 {archived ? (
                   <Action title="Aktifkan" icon="restore" variant="primary" flex={1} disabled={busy} onPress={() => setDialog({ goal, action: 'restore' })} />
                 ) : (
-                  <Action title="Setor" icon="plus" variant="primary" flex={1} disabled={busy} onPress={() => openManage('deposit', goal.id)} />
+                  <>
+                    <Action title="Setor" icon="plus" variant="primary" flex={1} disabled={busy} onPress={() => openManage('deposit', goal.id)} />
+                    <Action title="Ambil" icon="arrow-up-right" flex={1} disabled={busy || goal.saved_rupiah <= 0} onPress={() => openManage('withdrawal', goal.id)} />
+                  </>
                 )}
+              </View>
+              <View style={styles.historyButton}>
                 <Action
-                  title={historyOpen ? 'Tutup' : 'Riwayat'}
+                  title={historyOpen ? 'Tutup Riwayat' : `Lihat Riwayat (${goal.entry_count})`}
                   icon={historyOpen ? 'chevron-up' : 'history'}
-                  flex={1}
+                  variant="subtle"
+                  compact
                   disabled={busy}
                   onPress={() => { void toggleHistory(goal.id); }}
                 />
@@ -502,7 +508,7 @@ export default function GoalsScreen() {
           <MaterialCommunityIcons name="information-outline" size={20} color={theme.colors.onSurfaceVariant} />
           <View style={{ flex: 1 }}>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20 }}>
-              Rekening terkait hanya menampilkan saldo aktual. Catatan Setor tetap terpisah dari transaksi transfer agar saldo tidak terhitung dua kali.
+              Setor dan Ambil dapat langsung memindahkan uang jika target terhubung ke rekening. Tanpa rekening, keduanya hanya mencatat progres target.
             </Text>
             <Pressable accessibilityRole="button" onPress={() => setGuideOpen(open => !open)} style={{ paddingVertical: 9, alignSelf: 'flex-start' }}>
               <Text style={{ color: theme.colors.primary, fontWeight: '700' }}>{guideOpen ? 'Tutup panduan' : 'Cara menggunakan'}</Text>
@@ -512,10 +518,10 @@ export default function GoalsScreen() {
         {guideOpen && (
           <View style={[styles.guide, { backgroundColor: theme.colors.surfaceVariant }]}>
             <Text style={{ color: theme.colors.onSurface }}>1. Buat target dan tentukan nominal.</Text>
-            <Text style={{ color: theme.colors.onSurface }}>2. Tekan Setor ketika menyisihkan uang.</Text>
-            <Text style={{ color: theme.colors.onSurface }}>3. Hubungkan satu rekening khusus lewat menu tiga titik (opsional).</Text>
-            <Text style={{ color: theme.colors.onSurface }}>4. Untuk memindahkan uang, gunakan menu Transaksi → Transfer; kemudian catat Setor pada target.</Text>
-            <Text style={{ color: theme.colors.onSurface }}>5. Jika ada tenggat, DeyPocket menghitung saran nominal tabungan per bulan.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>2. Hubungkan rekening khusus lewat menu tiga titik jika ingin memindahkan uang sungguhan.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>3. Tekan Setor atau Ambil. Progres target dan transfer rekening dicatat sekaligus bila terhubung.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>4. Tekan Riwayat untuk melihat semua setoran dan pengambilan.</Text>
+            <Text style={{ color: theme.colors.onSurface }}>5. Transfer biasa di menu Transaksi tidak otomatis menjadi setoran target.</Text>
           </View>
         )}
       </ScrollView>
@@ -550,12 +556,6 @@ export default function GoalsScreen() {
                   <>
                     <Action title="Edit Target" icon="pencil-outline" onPress={() => openManage('edit', currentDialogGoal.id)} />
                     <Action title="Hubungkan Rekening" icon="bank-outline" onPress={() => { setWalletError(''); setDialog({ goal: currentDialogGoal, action: 'wallet' }); }} />
-                    {walletLinks[currentDialogGoal.id] !== undefined && (
-                      <Action title="Transfer & Setor" icon="swap-horizontal" onPress={() => openManage('transfer', currentDialogGoal.id)} />
-                    )}
-                    {currentDialogGoal.saved_rupiah > 0 && (
-                      <Action title="Kurangi Tabungan" icon="minus-circle-outline" onPress={() => openManage('withdrawal', currentDialogGoal.id)} />
-                    )}
                     <Action title="Arsipkan Target" icon="archive-outline" onPress={() => setDialog({ goal: currentDialogGoal, action: 'archive' })} />
                   </>
                 ) : (
@@ -590,7 +590,7 @@ export default function GoalsScreen() {
                   </Pressable>
                 </View>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20, marginBottom: 12 }}>
-                  Pilih satu rekening khusus untuk memantau saldo aktual. Menghubungkan rekening tidak memindahkan uang dan tidak mengubah setoran yang sudah tercatat.
+                  Pilih rekening khusus target. Setelah terhubung, tombol Setor dan Ambil juga memindahkan uang antar-rekening. Menghubungkan rekening tidak mengubah saldo atau riwayat sebelumnya.
                 </Text>
                 {!!walletError && (
                   <Text variant="bodySmall" style={{ color: theme.colors.error, marginBottom: 10 }}>{walletError}</Text>
@@ -635,8 +635,6 @@ export default function GoalsScreen() {
                   <Action title="Lepas Kaitan Rekening" icon="link-off" variant="outline" disabled={busy}
                     onPress={() => { void chooseWallet(currentDialogGoal.id, null); }} />
                 )}
-                <Action title="Buka Transaksi untuk Transfer" icon="swap-horizontal" variant="subtle" disabled={busy}
-                  onPress={() => { setDialog(null); router.push('/transactions'); }} />
                 <Action title="Kelola Dompet & Rekening" icon="wallet-outline" disabled={busy}
                   onPress={() => { setDialog(null); router.push('/accounts'); }} />
               </ScrollView>
@@ -715,6 +713,7 @@ const styles = StyleSheet.create({
   amountsCol: { flex: 1, minWidth: 0 },
   amountsValue: { fontSize: 14, lineHeight: 21, fontWeight: '700', marginTop: 3, includeFontPadding: false },
   buttonsRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  historyButton: { marginTop: 10 },
   planRow: { borderWidth: 1, borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 13 },
   walletRow: { borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 12 },
   walletOption: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 12, minHeight: 64 },

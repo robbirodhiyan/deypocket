@@ -215,3 +215,123 @@ export async function getGoalTransferRecords(
     [goalId]
   );
 }
+
+
+/**
+ * Ambil dari target yang terhubung: transfer balik + ledger withdrawal.
+ * Tidak mengubah setoran lama; riwayat mencatat pengambilan terpisah.
+ * Gagal pada salah satu query membatalkan seluruh transaksi.
+ */
+export type GoalWithdrawalInput = {
+  goalId: number;
+  toWalletId: number;
+  amountRupiah: number;
+  occurredOn: string;
+  note: string;
+  operationId: string;
+};
+
+export async function withdrawFromSavingsGoal(
+  db: SQLiteDatabase,
+  input: GoalWithdrawalInput
+): Promise<void> {
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
+    throw new Error('Pengambilan dari rekening target hanya tersedia pada Android/iOS.');
+  }
+  if (!validId(input.goalId) || !validId(input.toWalletId)) {
+    throw new Error('Target atau rekening tujuan tidak valid.');
+  }
+  if (!Number.isSafeInteger(input.amountRupiah) || input.amountRupiah <= 0 || input.amountRupiah > MAX_RUPIAH) {
+    throw new Error('Nominal pengambilan tidak valid.');
+  }
+  if (!isValidDate(input.occurredOn)) throw new Error('Tanggal pengambilan tidak valid.');
+  if (input.note.trim().length > 250) throw new Error('Keterangan maksimal 250 karakter.');
+  if (!/^goal-transfer-[A-Za-z0-9-]{12,120}$/.test(input.operationId)) {
+    throw new Error('Identitas transaksi tidak valid.');
+  }
+
+  await ensureGoalsSchema(db);
+  await getGoalWalletLinks(db);
+  await getWallets(db);
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS dp_goal_withdrawal_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      operation_id TEXT NOT NULL UNIQUE,
+      goal_entry_id INTEGER NOT NULL UNIQUE REFERENCES dp_goal_entries(id) ON DELETE RESTRICT,
+      goal_id INTEGER NOT NULL,
+      from_wallet_id INTEGER NOT NULL,
+      to_wallet_id INTEGER NOT NULL,
+      amount_rupiah INTEGER NOT NULL CHECK(amount_rupiah > 0),
+      occurred_on TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dp_goal_withdrawal_records_goal
+      ON dp_goal_withdrawal_records(goal_id, occurred_on DESC, id DESC);
+  `);
+
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const atomicDb = createTransactionBoundDatabase(txn as unknown as SQLiteDatabase);
+    const duplicate = await atomicDb.getFirstAsync<{ id: number }>(
+      'SELECT id FROM dp_goal_withdrawal_records WHERE operation_id = ?',
+      [input.operationId]
+    );
+    if (duplicate) throw new Error('Pengambilan ini sudah tercatat. Periksa riwayat dahulu.');
+
+    const goal = await atomicDb.getFirstAsync<{ title: string; archived_at: string | null }>(
+      'SELECT title, archived_at FROM dp_savings_goals WHERE id = ?', [input.goalId]
+    );
+    if (!goal || goal.archived_at) throw new Error('Target tidak aktif.');
+    const linked = await atomicDb.getFirstAsync<{ wallet_id: number }>(
+      'SELECT wallet_id FROM dp_goal_wallet_links WHERE goal_id = ?', [input.goalId]
+    );
+    if (!linked || !validId(linked.wallet_id)) throw new Error('Rekening target belum terhubung.');
+    if (linked.wallet_id === input.toWalletId) throw new Error('Rekening tujuan harus berbeda dari rekening tabungan.');
+
+    const saved = await atomicDb.getFirstAsync<{ total: number }>(
+      `SELECT COALESCE(SUM(CASE WHEN kind = 'deposit' THEN amount_rupiah
+         ELSE -amount_rupiah END), 0) AS total
+       FROM dp_goal_entries WHERE goal_id = ?`, [input.goalId]
+    );
+    if (!Number.isSafeInteger(saved?.total) || (saved?.total ?? 0) < input.amountRupiah) {
+      throw new Error('Nominal pengambilan melebihi tabungan yang tercatat.');
+    }
+
+    const wallets = await getWallets(atomicDb);
+    const source = wallets.find(item => item.id === linked.wallet_id);
+    const target = wallets.find(item => item.id === input.toWalletId);
+    if (!source || !target) throw new Error('Rekening tabungan atau tujuan tidak ditemukan.');
+    if (!Number.isSafeInteger(source.balance_rupiah) || source.balance_rupiah < input.amountRupiah) {
+      throw new Error('Saldo rekening tabungan tidak mencukupi.');
+    }
+
+    await createTransfer(atomicDb, {
+      kind: 'transfer',
+      fromAccountId: linked.wallet_id,
+      toAccountId: input.toWalletId,
+      amountRupiah: input.amountRupiah,
+      occurredOn: input.occurredOn,
+      note: `Ambil tabungan: ${goal.title}`.slice(0, 200),
+    });
+
+    const createdAt = new Date().toISOString();
+    const note = input.note.trim()
+      ? `Ambil ke ${target.name}: ${input.note.trim()}`
+      : `Ambil ke ${target.name}`;
+    const result = await atomicDb.runAsync(
+      `INSERT INTO dp_goal_entries
+         (goal_id, kind, amount_rupiah, occurred_on, note, created_at)
+       VALUES (?, 'withdrawal', ?, ?, ?, ?)`,
+      [input.goalId, input.amountRupiah, input.occurredOn, note.slice(0, 250), createdAt]
+    );
+    if (!validId(result.lastInsertRowId)) throw new Error('Catatan pengambilan gagal disimpan.');
+
+    await atomicDb.runAsync(
+      `INSERT INTO dp_goal_withdrawal_records
+        (operation_id, goal_entry_id, goal_id, from_wallet_id,
+         to_wallet_id, amount_rupiah, occurred_on, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.operationId, result.lastInsertRowId, input.goalId, linked.wallet_id,
+       input.toWalletId, input.amountRupiah, input.occurredOn, createdAt]
+    );
+  });
+}
