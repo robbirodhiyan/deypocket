@@ -1,17 +1,18 @@
-# DeyPocket Sprint 20 — Quality & Release Gate
+# DeyPocket Sprint 21 — Release Candidate APK
 
-**Kanal:** OTA  
-**Status sebenarnya:** GATE STATIS — pengujian Android dan end-to-end tetap manual.
+**Kanal:** APK RC  
+**Status sebenarnya:** BUILD GUIDE — bukan APK ter-compile otomatis.
 
 ## Cakupan
 
-Pemeriksaan release statis dan matriks QA transaksi, backup, upgrade APK.
+Validasi profil EAS dan checklist rilis kandidat.
 
 ## File siap paste
 
 ```text
-scripts/deypocket-quality-gate.mjs
-QA_MATRIX.md
+scripts/deypocket-check-eas.mjs
+EAS_PROFILE_REFERENCE.json
+RC_CHECKLIST.md
 ```
 
 ## Cara pasang (tanpa installer)
@@ -25,18 +26,18 @@ QA_MATRIX.md
 
 ## Prasyarat/verifikasi wajib
 
-- [ ] Semua pengujian QA matrix PASS
-- [ ] Integrasi edit/hapus finance selesai
-- [ ] Restore teruji atau keluarkan dari scope release
+- [ ] eas.json profil APK benar
+- [ ] Keystore sama dengan v1.0.3
+- [ ] Android versionCode meningkat
 
 ## Perintah distribusi (jalankan hanya sesudah semua gate PASS)
 
 ```cmd
 cd /d C:\laragon\project\deypocket
+node scripts/deypocket-check-eas.mjs
 npm run validate
 npx tsc --noEmit
-node scripts/deypocket-quality-gate.mjs
-npx eas-cli@latest update --channel preview --environment preview --platform android --message "DeyPocket Sprint 20 - Quality & Release Gate"
+npx eas-cli@latest build --platform android --profile preview
 ```
 
 **Channel preview** hanya untuk pengujian. OTA tidak akan diterima APK dengan runtime tidak kompatibel. Setelah native module atau app version/runtime berubah, build APK baru terlebih dahulu. `production` jangan dipakai untuk preview.
