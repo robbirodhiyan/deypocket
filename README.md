@@ -1,18 +1,17 @@
-# DeyPocket Sprint 19 — Production Privacy UX
+# DeyPocket Sprint 20 — Quality & Release Gate
 
 **Kanal:** OTA  
-**Status sebenarnya:** UI AKTIF bila settings file dari sprint sebelumnya digunakan.
+**Status sebenarnya:** GATE STATIS — pengujian Android dan end-to-end tetap manual.
 
 ## Cakupan
 
-Halaman privasi lokal dan keterangan backup mentah yang belum terenkripsi.
+Pemeriksaan release statis dan matriks QA transaksi, backup, upgrade APK.
 
 ## File siap paste
 
 ```text
-src/features/deypocket/release-privacy.ts
-src/app/privacy.tsx
-src/app/(tabs)/settings.tsx
+scripts/deypocket-quality-gate.mjs
+QA_MATRIX.md
 ```
 
 ## Cara pasang (tanpa installer)
@@ -22,13 +21,13 @@ src/app/(tabs)/settings.tsx
 3. Untuk `settings.tsx`, bandingkan dengan perubahan lokal sebelum replace.
 4. Jalankan validasi dan QA di Android sebelum distribusi.
 
-Source `settings.tsx` di paket ini memuat menu Backup dari Sprint 18 dan Privasi dari Sprint 19. Pasang setelah Sprint 18.
+**PENTING:** Script pemeriksaan merupakan gerbang statis, bukan pengganti pengujian end-to-end. Jika integrasi finance atau restore masih belum selesai, jangan launching stable sekalipun script lulus.
 
 ## Prasyarat/verifikasi wajib
 
-- [ ] Tidak ada telemetri/izin tak diperlukan
-- [ ] Tidak ada data demo di production
-- [ ] Review teks privasi sesuai fitur nyata
+- [ ] Semua pengujian QA matrix PASS
+- [ ] Integrasi edit/hapus finance selesai
+- [ ] Restore teruji atau keluarkan dari scope release
 
 ## Perintah distribusi (jalankan hanya sesudah semua gate PASS)
 
@@ -36,7 +35,8 @@ Source `settings.tsx` di paket ini memuat menu Backup dari Sprint 18 dan Privasi
 cd /d C:\laragon\project\deypocket
 npm run validate
 npx tsc --noEmit
-npx eas-cli@latest update --channel preview --environment preview --platform android --message "DeyPocket Sprint 19 - Production Privacy UX"
+node scripts/deypocket-quality-gate.mjs
+npx eas-cli@latest update --channel preview --environment preview --platform android --message "DeyPocket Sprint 20 - Quality & Release Gate"
 ```
 
 **Channel preview** hanya untuk pengujian. OTA tidak akan diterima APK dengan runtime tidak kompatibel. Setelah native module atau app version/runtime berubah, build APK baru terlebih dahulu. `production` jangan dipakai untuk preview.
