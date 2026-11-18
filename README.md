@@ -1,17 +1,17 @@
-# DeyPocket Sprint 18 — SQLite Backup Export & Inspect
+# DeyPocket Sprint 19 — Production Privacy UX
 
-**Kanal:** APK Beta  
-**Status sebenarnya:** RESTORE BELUM AKTIF — membutuhkan root SQLiteProvider dan desain cutover database.
+**Kanal:** OTA  
+**Status sebenarnya:** UI AKTIF bila settings file dari sprint sebelumnya digunakan.
 
 ## Cakupan
 
-Ekspor database SQLite mentah + pemeriksaan file backup; tidak mengganti database aktif.
+Halaman privasi lokal dan keterangan backup mentah yang belum terenkripsi.
 
 ## File siap paste
 
 ```text
-src/features/deypocket/database-backup.ts
-src/app/backup-review.tsx
+src/features/deypocket/release-privacy.ts
+src/app/privacy.tsx
 src/app/(tabs)/settings.tsx
 ```
 
@@ -22,22 +22,21 @@ src/app/(tabs)/settings.tsx
 3. Untuk `settings.tsx`, bandingkan dengan perubahan lokal sebelum replace.
 4. Jalankan validasi dan QA di Android sebelum distribusi.
 
-**Native:** pasang modul melalui `npx expo install` (Expo memilih versi SDK kompatibel). Konfirmasi `eas.json` build preview menghasilkan APK, lalu rebuild. Source ini menyediakan ekspor dan inspeksi backup saja; **tidak** menyediakan restore langsung ke DB aktif.
+Source `settings.tsx` di paket ini memuat menu Backup dari Sprint 18 dan Privasi dari Sprint 19. Pasang setelah Sprint 18.
 
 ## Prasyarat/verifikasi wajib
 
-- [ ] Expo SDK/versi modul native yang kompatibel
-- [ ] SQLiteProvider & lokasi nama DB
-- [ ] Restore aman + backup terenkripsi sebelum klaim feature complete
+- [ ] Tidak ada telemetri/izin tak diperlukan
+- [ ] Tidak ada data demo di production
+- [ ] Review teks privasi sesuai fitur nyata
 
 ## Perintah distribusi (jalankan hanya sesudah semua gate PASS)
 
 ```cmd
 cd /d C:\laragon\project\deypocket
-npx expo install expo-file-system expo-document-picker expo-sharing
 npm run validate
 npx tsc --noEmit
-npx eas-cli@latest build --platform android --profile preview
+npx eas-cli@latest update --channel preview --environment preview --platform android --message "DeyPocket Sprint 19 - Production Privacy UX"
 ```
 
 **Channel preview** hanya untuk pengujian. OTA tidak akan diterima APK dengan runtime tidak kompatibel. Setelah native module atau app version/runtime berubah, build APK baru terlebih dahulu. `production` jangan dipakai untuk preview.

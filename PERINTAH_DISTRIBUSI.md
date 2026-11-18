@@ -1,11 +1,10 @@
-# Sprint 18 — APK Beta
+# Sprint 19 — OTA
 
 ```cmd
 cd /d C:\laragon\project\deypocket
-npx expo install expo-file-system expo-document-picker expo-sharing
 npm run validate
 npx tsc --noEmit
-npx eas-cli@latest build --platform android --profile preview
+npx eas-cli@latest update --channel preview --environment preview --platform android --message "DeyPocket Sprint 19 - Production Privacy UX"
 ```
 
 Prasyarat: validasi+pengujian device lulus. Jangan publish jika masih ada blocker integrasi.

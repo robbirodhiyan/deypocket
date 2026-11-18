@@ -48,6 +48,12 @@ const APP_LINKS: SettingLink[] = [
     href: '/backup-review' as Href,
   },
   {
+    title: 'Privasi & Penyimpanan',
+    description: 'Informasi keamanan dan data offline',
+    icon: 'shield-lock-outline',
+    href: '/privacy' as Href,
+  },
+  {
     title: 'Pembaruan Aplikasi',
     description: 'Periksa fitur dan versi terbaru',
     icon: 'update',
