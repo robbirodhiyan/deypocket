@@ -42,6 +42,12 @@ const FINANCE_LINKS: SettingLink[] = [
 
 const APP_LINKS: SettingLink[] = [
   {
+    title: 'Backup Data',
+    description: 'Ekspor dan periksa file backup lokal',
+    icon: 'database-export',
+    href: '/backup-review' as Href,
+  },
+  {
     title: 'Pembaruan Aplikasi',
     description: 'Periksa fitur dan versi terbaru',
     icon: 'update',

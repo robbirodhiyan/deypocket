@@ -1,12 +1,13 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, Stack, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useCallback, useRef, useState, type ComponentProps } from 'react';
+import { useCallback, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Modal,
   Platform,
   Pressable,
+  TextInput,
   ScrollView,
   StyleSheet,
   useWindowDimensions,
@@ -19,6 +20,7 @@ import { getWallets, type WalletRecord } from '../../features/deypocket/finance-
 import { getGoalWalletLinks, setGoalWalletLink } from '../../features/deypocket/goal-wallet-repository';
 import { calculateGoalPlan } from '../../features/deypocket/goal-planner';
 import { buildGoalHistoryView, type GoalHistoryFilter } from '../../features/deypocket/goal-history';
+import { organizeSavingsGoals, type GoalDisplayStatus, type GoalSortKey } from '../../features/deypocket/goal-organizer';
 import { calculateGoalInsights, getGoalActivityMap, type GoalActivityMap } from '../../features/deypocket/goal-insights';
 import {
   cancelManualGoalEntry, getGoalCorrectionMap, type GoalCorrectionMap,
@@ -112,6 +114,9 @@ export default function GoalsScreen() {
 
   const [filter, setFilter] = useState<Filter>('active');
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
+  const [goalQuery, setGoalQuery] = useState('');
+  const [goalStatus, setGoalStatus] = useState<GoalDisplayStatus>('all');
+  const [goalSort, setGoalSort] = useState<GoalSortKey>('newest');
   const [activity, setActivity] = useState<GoalActivityMap>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -349,6 +354,12 @@ export default function GoalsScreen() {
   }
 
   const isActive = filter === 'active';
+  const displayedGoals = useMemo(() => organizeSavingsGoals(goals, {
+    query: goalQuery,
+    status: goalStatus,
+    sort: goalSort,
+    archived: !isActive,
+  }), [goals, goalQuery, goalStatus, goalSort, isActive]);
   const totalSaved = goals.reduce((sum, goal) => sum + goal.saved_rupiah, 0);
   const totalTarget = goals.reduce((sum, goal) => sum + goal.target_rupiah, 0);
   const completed = goals.filter(goal => goal.saved_rupiah >= goal.target_rupiah).length;
@@ -418,6 +429,93 @@ export default function GoalsScreen() {
           ))}
         </View>
 
+        {!loading && !error && goals.length > 0 && (
+          <View style={[styles.organizer, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}>
+            <View style={[styles.searchField, { backgroundColor: theme.colors.surfaceVariant }]}>
+              <MaterialCommunityIcons name="magnify" size={21} color={theme.colors.onSurfaceVariant} />
+              <TextInput
+                accessibilityLabel="Cari nama atau catatan target"
+                placeholder="Cari nama atau catatan target..."
+                placeholderTextColor={theme.colors.onSurfaceVariant}
+                value={goalQuery}
+                onChangeText={setGoalQuery}
+                returnKeyType="search"
+                autoCorrect={false}
+                style={[styles.searchInput, { color: theme.colors.onSurface }]}
+              />
+              {goalQuery.length > 0 && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Hapus pencarian target"
+                  onPress={() => setGoalQuery('')}
+                  style={styles.searchClear}
+                >
+                  <MaterialCommunityIcons name="close-circle" size={20} color={theme.colors.onSurfaceVariant} />
+                </Pressable>
+              )}
+            </View>
+
+            {isActive && (
+              <View style={styles.organizerFilterRow}>
+                {([
+                  ['all', 'Semua'],
+                  ['in_progress', 'Belum Tercapai'],
+                  ['completed', 'Tercapai'],
+                ] as const).map(([value, label]) => (
+                  <Pressable
+                    key={value}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Status target ${label}`}
+                    accessibilityState={{ selected: goalStatus === value }}
+                    onPress={() => setGoalStatus(value)}
+                    style={[
+                      styles.organizerChip,
+                      { backgroundColor: goalStatus === value ? theme.colors.primaryContainer : theme.colors.surfaceVariant },
+                    ]}
+                  >
+                    <Text variant="labelSmall" style={{ fontWeight: '700', color: goalStatus === value ? theme.colors.onPrimaryContainer : theme.colors.onSurfaceVariant }}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, fontWeight: '700' }}>Urutkan berdasarkan</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="always"
+              contentContainerStyle={styles.sortChips}
+            >
+              {([
+                ['newest', 'Terbaru'],
+                ['deadline', 'Tenggat'],
+                ['progress', 'Progres'],
+                ['remaining', 'Sisa Nominal'],
+              ] as const).map(([value, label]) => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Urutkan target ${label}`}
+                  accessibilityState={{ selected: goalSort === value }}
+                  onPress={() => setGoalSort(value)}
+                  style={[
+                    styles.sortChip,
+                    {
+                      borderColor: goalSort === value ? theme.colors.primary : theme.colors.outlineVariant,
+                      backgroundColor: goalSort === value ? theme.colors.primaryContainer : theme.colors.surface,
+                    },
+                  ]}
+                >
+                  <Text variant="labelMedium" style={{ fontWeight: '700', color: goalSort === value ? theme.colors.onPrimaryContainer : theme.colors.onSurface }}>{label}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+              Menampilkan {displayedGoals.length} dari {goals.length} target
+            </Text>
+          </View>
+        )}
+
         {!!notice && (
           <View style={[styles.message, { backgroundColor: theme.colors.surfaceVariant }]}>
             <Text style={{ flex: 1, color: theme.colors.onSurface }}>{notice}</Text>
@@ -448,7 +546,23 @@ export default function GoalsScreen() {
           </View>
         )}
 
-        {!loading && !error && goals.map(goal => {
+        {!loading && !error && goals.length > 0 && displayedGoals.length === 0 && (
+          <View style={[styles.empty, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}>
+            <MaterialCommunityIcons name="magnify" size={35} color={theme.colors.primary} />
+            <Text variant="titleMedium" style={[styles.bold, { color: theme.colors.onSurface }]}>Tidak ada target yang cocok</Text>
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', lineHeight: 22 }}>
+              Ubah pencarian atau status untuk melihat target lain.
+            </Text>
+            <Action
+              title="Reset Filter"
+              icon="refresh"
+              variant="outline"
+              onPress={() => { setGoalQuery(''); setGoalStatus('all'); setGoalSort('newest'); }}
+            />
+          </View>
+        )}
+
+        {!loading && !error && displayedGoals.map(goal => {
           const archived = goal.archived_at !== null;
           const finished = goal.saved_rupiah >= goal.target_rupiah;
           const remaining = Math.max(0, goal.target_rupiah - goal.saved_rupiah);
@@ -1108,6 +1222,14 @@ const styles = StyleSheet.create({
   compactAction: { minHeight: 42 },
   actionLabel: { fontSize: 14, fontWeight: '700', marginLeft: 7, flexShrink: 1, includeFontPadding: false },
   sectionHeader: { marginTop: 22, marginBottom: 12 },
+  organizer: { borderWidth: 1, borderRadius: 17, padding: 13, gap: 11, marginBottom: 16 },
+  searchField: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, paddingHorizontal: 12, minHeight: 46 },
+  searchInput: { flex: 1, minWidth: 0, paddingVertical: 8, fontSize: 14, includeFontPadding: false },
+  searchClear: { minWidth: 32, minHeight: 36, alignItems: 'center', justifyContent: 'center' },
+  organizerFilterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  organizerChip: { minHeight: 34, borderRadius: 10, paddingVertical: 7, paddingHorizontal: 10, justifyContent: 'center' },
+  sortChips: { gap: 8, paddingVertical: 2 },
+  sortChip: { borderRadius: 11, borderWidth: 1, paddingVertical: 9, paddingHorizontal: 12, minHeight: 38, justifyContent: 'center' },
   tabs: { flexDirection: 'row', padding: 4, borderRadius: 14, marginBottom: 16 },
   tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 11, minHeight: 42 },
   message: { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 14, marginBottom: 14 },
